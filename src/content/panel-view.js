@@ -75,6 +75,9 @@ export class PanelView {
       return;
     }
 
+    // 保险清理：热更新或多次注入时，先移除残留根节点，避免出现双层面板。
+    document.querySelectorAll("#ccn-root").forEach((node) => node.remove());
+
     this.root = document.createElement("aside");
     this.root.id = "ccn-root";
     this.root.innerHTML = `

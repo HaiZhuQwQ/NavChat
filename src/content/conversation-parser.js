@@ -26,6 +26,14 @@ function normalizeInlineText(text) {
     .trim();
 }
 
+function buildTitleFallbackFromUserText(userText) {
+  return normalizeInlineText(userText)
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s{0,3}(?:[-*+]|\d+[.)]|[一二三四五六七八九十百千]+[、.])\s+/gm, "")
+    .replace(/^[，。！？,.!?：:；;\-\s]+/, "")
+    .trim();
+}
+
 function truncateByLength(text, maxLength) {
   const chars = Array.from(String(text || ""));
   if (chars.length <= maxLength) {
@@ -219,6 +227,27 @@ function buildAssistantPreview(assistantMessages) {
   return "";
 }
 
+function ensureMeaningfulTitle(title, userText, roundIndex) {
+  const normalizedTitle = normalizeInlineText(title);
+  const fallbackTitle = buildTitleFallbackFromUserText(userText);
+
+  // 若标题异常短（常见于 DOM 提取异常），回退到用户原文片段，避免出现“设…/A/缺…”。
+  const titleLength = Array.from(normalizedTitle).length;
+  if (titleLength >= 4) {
+    return normalizedTitle;
+  }
+
+  if (Array.from(fallbackTitle).length >= 4) {
+    return truncateByLength(fallbackTitle, 30);
+  }
+
+  if (normalizedTitle) {
+    return normalizedTitle;
+  }
+
+  return `第${roundIndex}轮对话`;
+}
+
 function summarizeRoundStatus(round) {
   if (round.assistantMessages.length === 0) {
     return ROUND_STATUS.PENDING_REPLY;
@@ -309,7 +338,7 @@ export function buildConversationRounds(messageElements, options) {
   const finalized = rounds.map((round, idx) => {
     const index = idx + 1;
     const status = summarizeRoundStatus(round);
-    const title = extractRoundTitle(round.userText, index);
+    const title = ensureMeaningfulTitle(extractRoundTitle(round.userText, index), round.userText, index);
     const assistantPreview = buildAssistantPreview(round.assistantMessages);
     const id = roundIdManager.assign(round, index);
     const assistantMessageEls = round.assistantMessages.map((item) => item.element);

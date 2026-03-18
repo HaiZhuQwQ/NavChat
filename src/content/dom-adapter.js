@@ -105,6 +105,24 @@ function normalizeText(value) {
     .trim();
 }
 
+function textScore(value) {
+  const normalized = normalizeText(value);
+  if (!normalized) {
+    return -1;
+  }
+
+  const charLength = Array.from(normalized).length;
+  const chineseCount = (normalized.match(/[\u4e00-\u9fa5]/g) || []).length;
+  const latinWordCount = (normalized.match(/[A-Za-z]{2,}/g) || []).length;
+  const punctuationCount = (normalized.match(/[，。！？,.!?：:；;]/g) || []).length;
+
+  // 低信息短句（例如“好”“可以”“A”）在标题提取阶段价值低，降低分数避免被误选为主文本。
+  const lowInfo = /^(?:[A-Za-z]|好|好的|可以|当然可以|收到|嗯|ok|okay|yes|no)$/i.test(normalized);
+  const lowInfoPenalty = lowInfo ? 20 : 0;
+
+  return charLength + chineseCount * 2 + latinWordCount * 2 + punctuationCount - lowInfoPenalty;
+}
+
 export class DomAdapter {
   constructor(logger) {
     this.logger = logger;
@@ -248,11 +266,31 @@ export class DomAdapter {
 
     const candidates = rootResult.elements.length > 0 ? rootResult.elements : [element];
     let bestText = "";
+    let bestScore = -1;
 
     for (const node of candidates) {
       const text = this._extractCleanText(node);
-      if (text.length > bestText.length) {
+      const score = textScore(text);
+      if (score > bestScore || (score === bestScore && text.length > bestText.length)) {
         bestText = text;
+        bestScore = score;
+      }
+    }
+
+    // 兜底：若候选子节点文本过短，尝试整块节点文本，防止只抓到“单字/单词”。
+    const rootText = this._extractCleanText(element);
+    const rootScore = textScore(rootText);
+    if (rootScore > bestScore || (rootScore === bestScore && rootText.length > bestText.length)) {
+      bestText = rootText;
+      bestScore = rootScore;
+    }
+
+    // 再兜底：拼接结构化文本段落，避免误选装饰节点导致信息过短。
+    if (bestText.length < 8) {
+      const structuredText = this._extractStructuredText(element);
+      const structuredScore = textScore(structuredText);
+      if (structuredScore > bestScore || (structuredScore === bestScore && structuredText.length > bestText.length)) {
+        bestText = structuredText;
       }
     }
 
@@ -381,6 +419,28 @@ export class DomAdapter {
       return rawText;
     } catch (_error) {
       return normalizeText(element.textContent || "");
+    }
+  }
+
+  _extractStructuredText(element) {
+    try {
+      const blocks = Array.from(
+        element.querySelectorAll("p, li, h1, h2, h3, h4, blockquote, pre, code, [dir='auto']")
+      );
+      const textParts = [];
+      for (const block of blocks) {
+        const text = this._extractCleanText(block);
+        if (!text) {
+          continue;
+        }
+        if (textParts[textParts.length - 1] === text) {
+          continue;
+        }
+        textParts.push(text);
+      }
+      return normalizeText(textParts.join(" "));
+    } catch (_error) {
+      return "";
     }
   }
 

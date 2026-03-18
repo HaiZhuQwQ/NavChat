@@ -7,6 +7,8 @@ import { PanelView } from "./panel-view.js";
 import { ScrollManager } from "./scroll-manager.js";
 import { loadPanelCollapsed, savePanelCollapsed } from "./state-store.js";
 
+const RUNTIME_INSTANCE_KEY = "__CCN_RUNTIME_INSTANCE__";
+
 function debounce(fn, delayMs) {
   let timer = null;
   return (...args) => {
@@ -97,6 +99,26 @@ async function waitForConversationContainer(adapter, logger) {
 
 async function bootstrap() {
   const logger = createLogger("main");
+
+  // 单实例保护：若页面上已有旧实例，先销毁，避免出现“收起后还有一层面板”。
+  const previousInstance = window[RUNTIME_INSTANCE_KEY];
+  if (previousInstance && typeof previousInstance.destroy === "function") {
+    try {
+      previousInstance.destroy("re-bootstrap");
+    } catch (error) {
+      logger.warn("销毁旧实例失败，已继续执行。", error);
+    }
+  }
+
+  // 兜底清理遗留节点：某些热更新场景可能残留旧 DOM（文档对象模型）根节点。
+  document.querySelectorAll("#ccn-root").forEach((node) => node.remove());
+
+  const runtime = {
+    destroyed: false,
+    destroy: () => {}
+  };
+  window[RUNTIME_INSTANCE_KEY] = runtime;
+
   logger.info("扩展启动。", {
     href: location.href,
     userAgent: navigator.userAgent
@@ -104,6 +126,9 @@ async function bootstrap() {
 
   if (!isSupportedHost(location.hostname)) {
     logger.info("当前域名不在支持范围内，已退出。", { hostname: location.hostname });
+    if (window[RUNTIME_INSTANCE_KEY] === runtime) {
+      delete window[RUNTIME_INSTANCE_KEY];
+    }
     return;
   }
 
@@ -111,6 +136,9 @@ async function bootstrap() {
     logger.info("当前页面不是有效对话页，已退出。", {
       pathname: location.pathname
     });
+    if (window[RUNTIME_INSTANCE_KEY] === runtime) {
+      delete window[RUNTIME_INSTANCE_KEY];
+    }
     return;
   }
 
@@ -118,6 +146,15 @@ async function bootstrap() {
   const container = await waitForConversationContainer(adapter, logger);
   if (!container) {
     logger.warn("未检测到有效对话容器，不挂载导航面板。");
+    if (window[RUNTIME_INSTANCE_KEY] === runtime) {
+      delete window[RUNTIME_INSTANCE_KEY];
+    }
+    return;
+  }
+
+  // 若等待期间已有更新实例接管，本实例直接退出，避免重复挂载。
+  if (window[RUNTIME_INSTANCE_KEY] !== runtime) {
+    logger.warn("检测到更新实例已接管，当前实例退出。");
     return;
   }
 
@@ -178,6 +215,20 @@ async function bootstrap() {
     subtree: true,
     characterData: true
   });
+
+  runtime.destroy = (reason = "manual") => {
+    if (runtime.destroyed) {
+      return;
+    }
+    runtime.destroyed = true;
+    contentObserver.disconnect();
+    scrollManager.destroy();
+    panelView.destroy();
+    if (window[RUNTIME_INSTANCE_KEY] === runtime) {
+      delete window[RUNTIME_INSTANCE_KEY];
+    }
+    logger.info("历史对话导航实例已销毁。", { reason });
+  };
 
   logger.info("历史对话导航已完成初始化。", {
     refreshDebounceMs: CONFIG.REFRESH_DEBOUNCE_MS
