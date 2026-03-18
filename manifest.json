@@ -27,7 +27,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["src/content/*.js"],
+      "resources": ["src/content/*.js", "icons/navchat-collapse-toggle.png"],
       "matches": [
         "https://chatgpt.com/*",
         "https://chat.openai.com/*"

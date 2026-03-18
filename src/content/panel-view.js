@@ -99,7 +99,10 @@ export class PanelView {
         <ul class="ccn-list" aria-live="polite"></ul>
         <div class="ccn-empty" hidden>没有匹配的对话，请换个关键词试试。</div>
       </div>
-      <button type="button" class="ccn-expand-btn" aria-label="展开历史对话导航">历史</button>
+      <button type="button" class="ccn-expand-btn" aria-label="展开历史对话导航" title="展开历史对话导航">
+        <img class="ccn-expand-icon" alt="" aria-hidden="true" />
+        <span class="ccn-expand-fallback">历史</span>
+      </button>
     `;
 
     document.body.appendChild(this.root);
@@ -112,6 +115,7 @@ export class PanelView {
     this.emptyState = this.root.querySelector(".ccn-empty");
 
     this.applyThemeVariables();
+    this.applyExpandButtonIcon();
 
     this.collapseButton.addEventListener("click", () => this.setCollapsed(true));
     this.expandButton.addEventListener("click", (event) => this.handleExpandClick(event));
@@ -120,6 +124,44 @@ export class PanelView {
     window.addEventListener("resize", this.boundHandleWindowResize, { passive: true });
 
     this.logger.info("导航面板挂载完成。");
+  }
+
+  applyExpandButtonIcon() {
+    if (!this.expandButton) {
+      return;
+    }
+
+    const iconNode = this.expandButton.querySelector(".ccn-expand-icon");
+    if (!(iconNode instanceof HTMLImageElement)) {
+      return;
+    }
+
+    const iconUrl = typeof chrome !== "undefined" && chrome.runtime?.getURL
+      ? chrome.runtime.getURL("icons/navchat-collapse-toggle.png")
+      : "";
+
+    if (!iconUrl) {
+      this.expandButton.classList.remove("has-icon");
+      return;
+    }
+
+    iconNode.addEventListener(
+      "load",
+      () => {
+        this.expandButton?.classList.add("has-icon");
+      },
+      { once: true }
+    );
+
+    iconNode.addEventListener(
+      "error",
+      () => {
+        this.expandButton?.classList.remove("has-icon");
+      },
+      { once: true }
+    );
+
+    iconNode.src = iconUrl;
   }
 
   destroy() {
@@ -141,10 +183,8 @@ export class PanelView {
     }
 
     this.root.classList.toggle("is-collapsed", this.collapsed);
-
-    if (this.collapsed) {
-      this.setRootTop(this.clampRootTop(this.getCurrentRootTop()));
-    }
+    // 收起/展开都要立即做边界钳制，避免展开后面板下半部落到视口外。
+    this.setRootTop(this.clampRootTop(this.getCurrentRootTop(), { collapsed: this.collapsed }));
 
     if (options.skipPersist !== true && typeof this.onToggleCollapse === "function") {
       this.onToggleCollapse(this.collapsed);
@@ -513,10 +553,18 @@ export class PanelView {
     this.root.style.top = `${Math.round(top)}px`;
   }
 
-  clampRootTop(top) {
+  getVisiblePanelHeight(collapsed = this.collapsed) {
+    if (collapsed) {
+      return this.expandButton?.offsetHeight || 40;
+    }
+    return this.shell?.offsetHeight || this.root?.offsetHeight || 420;
+  }
+
+  clampRootTop(top, options = {}) {
+    const collapsed = options.collapsed ?? this.collapsed;
     const minTop = 8;
-    const buttonHeight = this.expandButton?.offsetHeight || 42;
-    const maxTop = Math.max(minTop, window.innerHeight - buttonHeight - 8);
+    const visibleHeight = this.getVisiblePanelHeight(collapsed);
+    const maxTop = Math.max(minTop, window.innerHeight - visibleHeight - 8);
     return Math.min(Math.max(top, minTop), maxTop);
   }
 }

@@ -134,7 +134,7 @@
   width: auto;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.026);
+  background: #f1f2f5;
   text-align: left;
   padding: 8px 8px;
   display: block;
@@ -338,9 +338,13 @@
   opacity: 0;
   pointer-events: none;
   transform: translateX(12px);
-  padding: 10px 12px;
-  font-size: 13px;
-  font-weight: 600;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
   user-select: none;
   touch-action: none;
   cursor: grab;
@@ -349,6 +353,30 @@
 
 #ccn-root .ccn-expand-btn.is-dragging {
   cursor: grabbing;
+}
+
+#ccn-root .ccn-expand-icon {
+  width: 36px;
+  height: 36px;
+  object-fit: contain;
+  display: none;
+  pointer-events: none;
+}
+
+#ccn-root .ccn-expand-fallback {
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 600;
+  color: var(--ccn-muted);
+  pointer-events: none;
+}
+
+#ccn-root .ccn-expand-btn.has-icon .ccn-expand-icon {
+  display: block;
+}
+
+#ccn-root .ccn-expand-btn.has-icon .ccn-expand-fallback {
+  display: none;
 }
 
 #ccn-root.is-collapsed .ccn-shell {
@@ -360,6 +388,14 @@
 #ccn-root.is-collapsed .ccn-expand-btn {
   opacity: 1;
   pointer-events: auto;
+  /* 收起态只露出左半边图标：按钮右半隐藏在侧边外。 */
+  transform: translateX(20px);
+}
+
+#ccn-root.is-collapsed .ccn-expand-btn:hover,
+#ccn-root.is-collapsed .ccn-expand-btn:focus-visible,
+#ccn-root.is-collapsed .ccn-expand-btn.is-dragging {
+  /* 悬停/聚焦/拖拽时显示完整图标。 */
   transform: translateX(0);
 }
 
