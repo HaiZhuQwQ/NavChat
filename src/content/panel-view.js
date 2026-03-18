@@ -1,8 +1,5 @@
 import {
   CONFIG,
-  MAJOR_TICK_STEP,
-  MINOR_TICK_STEP,
-  STATUS_LABEL_MAP,
   THEME_PRIMARY
 } from "./constants.js";
 
@@ -34,16 +31,6 @@ function hexToRgbString(hexColor) {
   const g = (value >> 8) & 255;
   const b = value & 255;
   return `${r}, ${g}, ${b}`;
-}
-
-function resolveRulerTickLevel(roundIndex) {
-  if (MAJOR_TICK_STEP > 0 && roundIndex % MAJOR_TICK_STEP === 0) {
-    return "major";
-  }
-  if (MINOR_TICK_STEP > 0 && roundIndex % MINOR_TICK_STEP === 0) {
-    return "mid";
-  }
-  return "minor";
 }
 
 export class PanelView {
@@ -92,12 +79,19 @@ export class PanelView {
     this.root.id = "ccn-root";
     this.root.innerHTML = `
       <div class="ccn-shell" aria-label="历史对话导航面板">
-        <div class="ccn-header">
-          <h2 class="ccn-title">历史对话导航</h2>
-          <button type="button" class="ccn-toggle-btn" data-action="collapse">收起</button>
-        </div>
         <div class="ccn-search-wrap">
           <input type="search" class="ccn-search-input" placeholder="搜索问题关键词..." aria-label="搜索导航项" />
+          <button
+            type="button"
+            class="ccn-toggle-btn is-icon"
+            data-action="collapse"
+            aria-label="收起历史对话导航"
+            title="收起"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+              <path d="M5.5 3.5L10 8l-4.5 4.5" />
+            </svg>
+          </button>
         </div>
         <ul class="ccn-list" aria-live="polite"></ul>
         <div class="ccn-empty" hidden>没有匹配的对话，请换个关键词试试。</div>
@@ -216,18 +210,13 @@ export class PanelView {
     const rulerNode = document.createElement("span");
     rulerNode.className = "ccn-item-ruler";
 
-    const tickNode = document.createElement("span");
-    tickNode.className = "ccn-ruler-tick is-minor";
-
     const labelNode = document.createElement("span");
     labelNode.className = "ccn-ruler-label";
 
     rulerNode.appendChild(labelNode);
-    rulerNode.appendChild(tickNode);
 
     return {
       rulerNode,
-      tickNode,
       labelNode
     };
   }
@@ -240,7 +229,7 @@ export class PanelView {
     button.type = "button";
     button.className = "ccn-item-btn";
 
-    const { rulerNode, tickNode, labelNode } = this.createRulerNode();
+    const { rulerNode, labelNode } = this.createRulerNode();
 
     const contentNode = document.createElement("span");
     contentNode.className = "ccn-item-main";
@@ -279,7 +268,6 @@ export class PanelView {
     item.__ccnRefs = {
       button,
       rulerNode,
-      tickNode,
       labelNode,
       titleNode,
       statusNode,
@@ -290,16 +278,8 @@ export class PanelView {
   }
 
   updateRuler(refs, roundIndex) {
-    const tickLevel = resolveRulerTickLevel(roundIndex);
-    refs.tickNode.className = `ccn-ruler-tick is-${tickLevel}`;
-
-    if (tickLevel === "major") {
-      refs.labelNode.classList.add("is-visible");
-      refs.labelNode.textContent = String(roundIndex);
-    } else {
-      refs.labelNode.classList.remove("is-visible");
-      refs.labelNode.textContent = "";
-    }
+    refs.labelNode.classList.add("is-visible");
+    refs.labelNode.textContent = String(roundIndex);
   }
 
   updateRoundItem(item, round) {
@@ -317,20 +297,11 @@ export class PanelView {
     if (!refs.rulerNode) {
       const created = this.createRulerNode();
       refs.rulerNode = created.rulerNode;
-      refs.tickNode = created.tickNode;
       refs.labelNode = created.labelNode;
       item.insertBefore(refs.rulerNode, refs.button);
     }
     if (refs.rulerNode.parentElement !== item) {
       item.insertBefore(refs.rulerNode, refs.button);
-    }
-
-    if (!refs.tickNode || !refs.rulerNode.contains(refs.tickNode)) {
-      refs.tickNode = refs.rulerNode.querySelector(".ccn-ruler-tick");
-    }
-    if (!refs.tickNode) {
-      refs.tickNode = document.createElement("span");
-      refs.tickNode.className = "ccn-ruler-tick is-minor";
     }
 
     if (!refs.labelNode || !refs.rulerNode.contains(refs.labelNode)) {
@@ -341,11 +312,10 @@ export class PanelView {
       refs.labelNode.className = "ccn-ruler-label";
     }
 
-    // 规范子节点顺序：左侧数字（label），右侧横刻度（tick）。
+    // 规范子节点：只保留数字序号（label），不显示任何刻度线。
     refs.rulerNode.appendChild(refs.labelNode);
-    refs.rulerNode.appendChild(refs.tickNode);
     for (const child of Array.from(refs.rulerNode.children)) {
-      if (child !== refs.labelNode && child !== refs.tickNode) {
+      if (child !== refs.labelNode) {
         child.remove();
       }
     }
@@ -358,16 +328,10 @@ export class PanelView {
     this.updateRuler(refs, round.index);
     refs.titleNode.textContent = round.title;
 
-    const statusLabel = STATUS_LABEL_MAP[round.status];
-    if (statusLabel) {
-      refs.statusNode.hidden = false;
-      refs.statusNode.className = `ccn-item-status is-${round.status}`;
-      refs.statusNode.textContent = statusLabel;
-    } else {
-      refs.statusNode.hidden = true;
-      refs.statusNode.className = "ccn-item-status";
-      refs.statusNode.textContent = "";
-    }
+    // 本轮 UI 要求：不展示“生成中/异常”等状态标签，保持列表更简洁。
+    refs.statusNode.hidden = true;
+    refs.statusNode.className = "ccn-item-status";
+    refs.statusNode.textContent = "";
 
     const previewText = String(round.assistantPreview || "").trim();
     if (previewText) {

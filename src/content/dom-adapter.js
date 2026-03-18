@@ -10,18 +10,22 @@ const SELECTOR_REGISTRY = {
   messageRoots: {
     primary: [
       "[data-message-author-role]",
+      "div[data-message-author-role]",
       "article[data-message-author-role]",
       "article[data-testid^='conversation-turn-'] [data-message-author-role]",
+      "article[data-testid*='conversation-turn'] [data-message-author-role]",
       "[data-testid^='conversation-turn-']",
       "[data-testid*='conversation-turn']",
       "[data-testid='user-message']",
       "[data-testid='assistant-message']",
+      "[data-testid='conversation-turn-content']",
       "[data-message-id]"
     ],
     fallback: [
       "article[data-testid^='conversation-turn-']",
       "[data-testid^='conversation-turn-']",
       "article[data-testid*='conversation-turn']",
+      "main [data-testid*='message']",
       "[data-testid*='message']",
       "[data-message-id]",
       "main article",
@@ -33,12 +37,14 @@ const SELECTOR_REGISTRY = {
       "main [data-testid^='conversation-turn-']",
       "main [data-testid*='conversation-turn']",
       "main [data-message-author-role]",
+      "main [data-testid='conversation-turn-content']",
       "main [data-message-id]"
     ],
     fallback: [
       "[data-testid^='conversation-turn-']",
       "[data-testid*='conversation-turn']",
       "[data-message-author-role]",
+      "[data-testid='conversation-turn-content']",
       "[data-message-id]",
       "article"
     ]
@@ -104,6 +110,7 @@ export class DomAdapter {
     this.logger = logger;
     this.selectorLogMemo = new Set();
     this.emptyHintLogged = false;
+    this.emptyMessageScanCount = 0;
   }
 
   findConversationContainer(root = document, options = {}) {
@@ -119,6 +126,7 @@ export class DomAdapter {
 
   getOrderedMessageElements(container) {
     const result = this.selectAllWithFallback(container, "messageRoots", {
+      silent: true,
       mapElement: (el) => this.normalizeMessageElement(el),
       filterElement: (el) => Boolean(el)
     });
@@ -126,6 +134,7 @@ export class DomAdapter {
     let ordered = sortByDomOrder(uniqueElements(result.elements));
     if (ordered.length === 0) {
       const globalFallback = this.selectAllWithFallback(document, "messageRootsDocumentFallback", {
+        silent: true,
         mapElement: (el) => this.normalizeMessageElement(el),
         filterElement: (el) => Boolean(el)
       });
@@ -133,10 +142,26 @@ export class DomAdapter {
     }
 
     if (ordered.length === 0) {
-      this.logger.warn("主对话容器已找到，但消息节点匹配为空。", {
-        containerTag: container?.tagName
-      });
-      this._logContainerHints(container);
+      const heuristic = this._collectHeuristicMessageElements(container);
+      ordered = sortByDomOrder(uniqueElements(heuristic));
+    }
+
+    if (ordered.length === 0) {
+      this.emptyMessageScanCount += 1;
+      const containerTextLength = normalizeText(container?.textContent || "").length;
+      const shouldWarn = this.emptyMessageScanCount >= 4 && containerTextLength > 20;
+
+      if (shouldWarn) {
+        this.logger.warn("主对话容器已找到，但消息节点匹配为空。", {
+          containerTag: container?.tagName,
+          emptyScanCount: this.emptyMessageScanCount,
+          containerTextLength
+        });
+        this._logContainerHints(container);
+      }
+    } else {
+      this.emptyMessageScanCount = 0;
+      this.emptyHintLogged = false;
     }
 
     return ordered;
@@ -361,6 +386,23 @@ export class DomAdapter {
 
   _containsKeyword(source, keywords) {
     return keywords.some((word) => source.includes(word));
+  }
+
+  _collectHeuristicMessageElements(container) {
+    if (!container) {
+      return [];
+    }
+
+    const broadCandidates = this._queryAllWithShadow(
+      container,
+      "[data-message-author-role], [data-message-id], [data-testid*='conversation-turn'], [data-testid='conversation-turn-content'], [data-testid*='message']"
+    );
+
+    const normalized = broadCandidates
+      .map((element) => this.normalizeMessageElement(element))
+      .filter(Boolean);
+
+    return uniqueElements(normalized);
   }
 
   _hasAnySelector(root, key) {

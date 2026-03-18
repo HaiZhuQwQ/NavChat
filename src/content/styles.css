@@ -16,8 +16,8 @@
   --ccn-shadow: 0 18px 46px rgba(15, 23, 42, 0.16);
 
   position: fixed;
-  right: 20px;
-  top: 84px;
+  right: 12px;
+  top: 72px;
   z-index: 999999;
   color: var(--ccn-text);
   font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
@@ -28,8 +28,8 @@
   max-height: 78vh;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 14px;
+  gap: 10px;
+  padding: 10px;
   background: var(--ccn-bg);
   border: 1px solid var(--ccn-border);
   border-radius: var(--ccn-radius);
@@ -38,23 +38,10 @@
   transition: transform 0.22s ease, opacity 0.22s ease;
 }
 
-#ccn-root .ccn-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-#ccn-root .ccn-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
-}
-
 #ccn-root .ccn-toggle-btn,
 #ccn-root .ccn-expand-btn {
   border: 1px solid var(--ccn-border);
-  border-radius: 999px;
+  border-radius: 10px;
   background: #ffffff;
   color: var(--ccn-muted);
   cursor: pointer;
@@ -73,21 +60,20 @@
   box-shadow: 0 0 0 3px rgba(var(--ccn-theme-primary-rgb), 0.14);
 }
 
-#ccn-root .ccn-toggle-btn {
-  font-size: 12px;
-  padding: 5px 10px;
-}
-
 #ccn-root .ccn-search-wrap {
   display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 #ccn-root .ccn-search-input {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
+  height: 34px;
   box-sizing: border-box;
   border: 1px solid var(--ccn-border);
   border-radius: 10px;
-  padding: 8px 10px;
+  padding: 0 10px;
   font-size: 13px;
   outline: none;
   color: var(--ccn-text);
@@ -99,40 +85,50 @@
   box-shadow: 0 0 0 3px rgba(var(--ccn-theme-primary-rgb), 0.15);
 }
 
+#ccn-root .ccn-toggle-btn.is-icon {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+}
+
+#ccn-root .ccn-toggle-btn.is-icon svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 #ccn-root .ccn-list {
   margin: 0;
   padding: 0;
   list-style: none;
-  overflow: auto;
-  max-height: calc(78vh - 130px);
-  position: relative;
-}
-
-/* 列表级“尺子基准线”：只保留一根，避免每项重复绘制。 */
-#ccn-root .ccn-list::before {
-  content: "";
-  position: absolute;
-  top: 6px;
-  bottom: 6px;
-  left: 31px;
-  width: 1px;
-  background: rgba(71, 85, 105, 0.24);
-  pointer-events: none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-height: calc(78vh - 78px);
+  padding-right: 2px;
+  margin-right: -2px;
 }
 
 #ccn-root .ccn-item + .ccn-item {
-  margin-top: 6px;
+  margin-top: 12px;
 }
 
 #ccn-root .ccn-item {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
+  grid-template-columns: 2.8ch minmax(0, 1fr);
   align-items: center;
-  column-gap: 8px;
+  column-gap: 2px;
 }
 
 #ccn-root .ccn-item-btn {
-  width: 100%;
+  width: calc(100% + 2px);
   border: 1px solid transparent;
   border-radius: 10px;
   background: rgba(15, 23, 42, 0.026);
@@ -158,10 +154,11 @@
   display: flex;
   flex-direction: row;
   align-items: center;
-  justify-content: flex-start;
-  gap: 6px;
-  width: 46px;
+  justify-content: center;
+  gap: 0;
+  width: 2.8ch;
   min-height: 100%;
+  transform: translateX(-2px);
 }
 
 /* 兼容旧版本残留：强制隐藏纵向轨道线。 */
@@ -176,13 +173,7 @@
 }
 
 #ccn-root .ccn-ruler-tick {
-  position: relative;
-  z-index: 1;
-  display: block;
-  width: 9px;
-  height: 2px;
-  border-radius: 999px;
-  background: rgba(71, 85, 105, 0.76);
+  display: none !important;
 }
 
 #ccn-root .ccn-ruler-tick.is-mid {
@@ -197,13 +188,48 @@
 #ccn-root .ccn-ruler-label {
   position: relative;
   z-index: 1;
-  width: 20px;
+  width: 2.8ch;
   min-height: 11px;
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
-  text-align: right;
-  color: transparent;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--ccn-muted);
   user-select: none;
+}
+
+/* 轻量化 scrollbar（滚动条）样式，减少视觉干扰。 */
+#ccn-root .ccn-list {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  scrollbar-gutter: auto;
+}
+
+#ccn-root .ccn-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+#ccn-root .ccn-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#ccn-root .ccn-list::-webkit-scrollbar-thumb {
+  background: transparent;
+  border-radius: 999px;
+}
+
+#ccn-root .ccn-list:hover,
+#ccn-root .ccn-list:focus-within {
+  scrollbar-color: rgba(71, 85, 105, 0.18) transparent;
+}
+
+#ccn-root .ccn-list:hover::-webkit-scrollbar-thumb,
+#ccn-root .ccn-list:focus-within::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.11);
+}
+
+#ccn-root .ccn-list:hover::-webkit-scrollbar-thumb:hover {
+  background: rgba(71, 85, 105, 0.18);
 }
 
 #ccn-root .ccn-ruler-label.is-visible {
@@ -284,13 +310,9 @@
   font-weight: 700;
 }
 
-#ccn-root .ccn-item.is-active .ccn-ruler-label.is-visible {
+#ccn-root .ccn-item.is-active .ccn-ruler-label {
   color: var(--ccn-accent);
   font-weight: 700;
-}
-
-#ccn-root .ccn-item.is-active .ccn-ruler-tick {
-  background: var(--ccn-accent);
 }
 
 #ccn-root .ccn-empty {
@@ -334,8 +356,8 @@
 
 @media (max-width: 1200px) {
   #ccn-root {
-    right: 10px;
-    top: 72px;
+    right: 8px;
+    top: 64px;
   }
 
   #ccn-root .ccn-shell {
@@ -345,37 +367,53 @@
 
 @media (prefers-color-scheme: dark) {
   #ccn-root {
-    --ccn-bg: rgba(15, 23, 42, 0.9);
-    --ccn-border: rgba(148, 163, 184, 0.24);
-    --ccn-text: #e2e8f0;
-    --ccn-muted: #cbd5e1;
-    --ccn-shadow: 0 20px 46px rgba(2, 6, 23, 0.48);
+    --ccn-bg: rgba(24, 28, 34, 0.9);
+    --ccn-border: rgba(148, 163, 184, 0.16);
+    --ccn-text: #d7dee7;
+    --ccn-muted: #aab4c2;
+    --ccn-accent-soft: rgba(var(--ccn-theme-primary-rgb), 0.07);
+    --ccn-accent-hover-bg: rgba(var(--ccn-theme-primary-rgb), 0.05);
+    --ccn-accent-hover-border: rgba(var(--ccn-theme-primary-rgb), 0.2);
+    --ccn-accent-active-border: rgba(var(--ccn-theme-primary-rgb), 0.32);
+    --ccn-warning: #c29763;
+    --ccn-danger: #c08383;
+    --ccn-shadow: 0 18px 38px rgba(6, 10, 16, 0.42);
   }
 
   #ccn-root .ccn-toggle-btn,
   #ccn-root .ccn-expand-btn,
   #ccn-root .ccn-search-input {
-    background: rgba(15, 23, 42, 0.78);
+    background: rgba(34, 39, 47, 0.82);
     color: var(--ccn-text);
   }
 
   #ccn-root .ccn-item-btn {
-    background: rgba(148, 163, 184, 0.08);
-  }
-
-  #ccn-root .ccn-ruler-tick {
-    background: rgba(203, 213, 225, 0.74);
-  }
-
-  #ccn-root .ccn-list::before {
-    background: rgba(148, 163, 184, 0.34);
+    background: rgba(148, 163, 184, 0.06);
   }
 
   #ccn-root .ccn-item-preview {
-    color: rgba(203, 213, 225, 0.72);
+    color: rgba(203, 213, 225, 0.62);
   }
 
   #ccn-root .ccn-item-preview.is-empty {
     color: transparent;
+  }
+
+  #ccn-root .ccn-list {
+    scrollbar-color: transparent transparent;
+  }
+
+  #ccn-root .ccn-list:hover,
+  #ccn-root .ccn-list:focus-within {
+    scrollbar-color: rgba(148, 163, 184, 0.14) transparent;
+  }
+
+  #ccn-root .ccn-list:hover::-webkit-scrollbar-thumb,
+  #ccn-root .ccn-list:focus-within::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.12);
+  }
+
+  #ccn-root .ccn-list:hover::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.18);
   }
 }
