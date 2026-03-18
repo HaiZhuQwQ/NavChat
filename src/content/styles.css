@@ -21,6 +21,7 @@
   z-index: 999999;
   color: var(--ccn-text);
   font-family: "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  pointer-events: none;
 }
 
 #ccn-root .ccn-shell {
@@ -36,6 +37,7 @@
   box-shadow: var(--ccn-shadow);
   backdrop-filter: blur(10px);
   transition: transform 0.22s ease, opacity 0.22s ease;
+  pointer-events: auto;
 }
 
 #ccn-root .ccn-toggle-btn,

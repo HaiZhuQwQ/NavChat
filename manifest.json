@@ -1,8 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "历史对话导航 ChatGPT Conversation Navigator",
+  "name": "NavChat",
   "description": "在 ChatGPT 对话页面生成可搜索、可跳转的历史轮次导航面板。",
   "version": "0.1.0",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "permissions": ["storage"],
   "host_permissions": [
     "https://chatgpt.com/*",
@@ -29,6 +35,12 @@
     }
   ],
   "action": {
-    "default_title": "历史对话导航"
+    "default_title": "NavChat",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   }
 }
