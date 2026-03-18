@@ -3,10 +3,10 @@
   --ccn-border: rgba(15, 23, 42, 0.1);
   --ccn-text: #0f172a;
   --ccn-muted: #475569;
-  --ccn-theme-primary: #287cff;
+  --ccn-theme-primary: #287CFF;
   --ccn-theme-primary-rgb: 40, 124, 255;
   --ccn-accent: var(--ccn-theme-primary);
-  --ccn-accent-soft: rgba(var(--ccn-theme-primary-rgb), 0.14);
+  --ccn-accent-soft: rgba(var(--ccn-theme-primary-rgb), 0.1);
   --ccn-accent-hover-bg: rgba(var(--ccn-theme-primary-rgb), 0.08);
   --ccn-accent-hover-border: rgba(var(--ccn-theme-primary-rgb), 0.32);
   --ccn-accent-active-border: rgba(var(--ccn-theme-primary-rgb), 0.56);
@@ -60,6 +60,19 @@
   cursor: pointer;
 }
 
+#ccn-root .ccn-toggle-btn:hover,
+#ccn-root .ccn-expand-btn:hover {
+  border-color: var(--ccn-accent-hover-border);
+  color: var(--ccn-accent);
+}
+
+#ccn-root .ccn-toggle-btn:focus-visible,
+#ccn-root .ccn-expand-btn:focus-visible {
+  outline: none;
+  border-color: var(--ccn-accent-active-border);
+  box-shadow: 0 0 0 3px rgba(var(--ccn-theme-primary-rgb), 0.14);
+}
+
 #ccn-root .ccn-toggle-btn {
   font-size: 12px;
   padding: 5px 10px;
@@ -92,23 +105,40 @@
   list-style: none;
   overflow: auto;
   max-height: calc(78vh - 130px);
+  position: relative;
+}
+
+/* 列表级“尺子基准线”：只保留一根，避免每项重复绘制。 */
+#ccn-root .ccn-list::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 31px;
+  width: 1px;
+  background: rgba(71, 85, 105, 0.24);
+  pointer-events: none;
 }
 
 #ccn-root .ccn-item + .ccn-item {
   margin-top: 6px;
 }
 
+#ccn-root .ccn-item {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 8px;
+}
+
 #ccn-root .ccn-item-btn {
   width: 100%;
   border: 1px solid transparent;
   border-radius: 10px;
-  background: rgba(15, 23, 42, 0.03);
+  background: rgba(15, 23, 42, 0.026);
   text-align: left;
-  padding: 8px 9px;
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  align-items: stretch;
-  gap: 8px;
+  padding: 8px 8px;
+  display: block;
   cursor: pointer;
   color: var(--ccn-text);
 }
@@ -125,35 +155,38 @@
 }
 
 #ccn-root .ccn-item-ruler {
-  position: relative;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 4px;
-  min-height: 46px;
+  justify-content: flex-start;
+  gap: 6px;
+  width: 46px;
+  min-height: 100%;
 }
 
+/* 兼容旧版本残留：强制隐藏纵向轨道线。 */
 #ccn-root .ccn-ruler-rail {
-  position: absolute;
-  top: 2px;
-  bottom: 2px;
-  width: 1px;
-  background: rgba(71, 85, 105, 0.28);
+  display: none !important;
+}
+
+#ccn-root .ccn-item-ruler::before,
+#ccn-root .ccn-item-ruler::after {
+  content: none !important;
+  display: none !important;
 }
 
 #ccn-root .ccn-ruler-tick {
   position: relative;
   z-index: 1;
   display: block;
-  width: 10px;
+  width: 9px;
   height: 2px;
   border-radius: 999px;
   background: rgba(71, 85, 105, 0.76);
 }
 
 #ccn-root .ccn-ruler-tick.is-mid {
-  width: 14px;
+  width: 13px;
 }
 
 #ccn-root .ccn-ruler-tick.is-major {
@@ -164,9 +197,11 @@
 #ccn-root .ccn-ruler-label {
   position: relative;
   z-index: 1;
+  width: 20px;
   min-height: 11px;
   font-size: 10px;
   line-height: 1;
+  text-align: right;
   color: transparent;
   user-select: none;
 }
@@ -179,7 +214,7 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 #ccn-root .ccn-item-head {
@@ -193,6 +228,7 @@
   flex: 1;
   min-width: 0;
   font-size: 13px;
+  font-weight: 600;
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -240,17 +276,17 @@
 }
 
 #ccn-root .ccn-item.is-active .ccn-item-btn {
-  border-color: var(--ccn-accent-active-border);
+  border-color: rgba(var(--ccn-theme-primary-rgb), 0.42);
   background: var(--ccn-accent-soft);
 }
 
-#ccn-root .ccn-item.is-active .ccn-item-title,
-#ccn-root .ccn-item.is-active .ccn-ruler-label.is-visible {
-  color: var(--ccn-accent);
+#ccn-root .ccn-item.is-active .ccn-item-title {
+  font-weight: 700;
 }
 
-#ccn-root .ccn-item.is-active .ccn-ruler-rail {
-  background: rgba(var(--ccn-theme-primary-rgb), 0.36);
+#ccn-root .ccn-item.is-active .ccn-ruler-label.is-visible {
+  color: var(--ccn-accent);
+  font-weight: 700;
 }
 
 #ccn-root .ccn-item.is-active .ccn-ruler-tick {
@@ -274,7 +310,14 @@
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 600;
+  user-select: none;
+  touch-action: none;
+  cursor: grab;
   transition: opacity 0.22s ease, transform 0.22s ease;
+}
+
+#ccn-root .ccn-expand-btn.is-dragging {
+  cursor: grabbing;
 }
 
 #ccn-root.is-collapsed .ccn-shell {
@@ -320,12 +363,12 @@
     background: rgba(148, 163, 184, 0.08);
   }
 
-  #ccn-root .ccn-ruler-rail {
-    background: rgba(148, 163, 184, 0.34);
-  }
-
   #ccn-root .ccn-ruler-tick {
     background: rgba(203, 213, 225, 0.74);
+  }
+
+  #ccn-root .ccn-list::before {
+    background: rgba(148, 163, 184, 0.34);
   }
 
   #ccn-root .ccn-item-preview {

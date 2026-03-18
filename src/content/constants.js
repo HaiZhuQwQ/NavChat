@@ -1,5 +1,10 @@
 export const EXTENSION_NAME = "历史对话导航";
 
+export const THEME_PRIMARY = "#287CFF";
+export const PREVIEW_MAX_LENGTH = 24;
+export const MINOR_TICK_STEP = 5;
+export const MAJOR_TICK_STEP = 5;
+
 export const STORAGE_KEYS = {
   PANEL_COLLAPSED: "ccn_panel_collapsed",
   DEBUG_ENABLED: "ccn_debug_enabled"
