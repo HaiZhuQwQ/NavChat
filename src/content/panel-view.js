@@ -1,5 +1,7 @@
 import {
   CONFIG,
+  SECTION_BUTTON_TEXT,
+  SECTION_EMPTY_TEXT,
   THEME_PRIMARY
 } from "./constants.js";
 
@@ -13,6 +15,23 @@ function debounce(fn, delayMs) {
 
 function normalizeSearchTerm(text) {
   return String(text || "").trim().toLowerCase();
+}
+
+function hasImageIntent(text) {
+  return /(?:图片|配图|画图|插画|海报|logo|图标|image|illustration|poster|icon|dalle)/i.test(String(text || ""));
+}
+
+function resolveRoundPreview(round) {
+  const previewText = String(round?.assistantPreview || "").trim();
+  if (previewText) {
+    return previewText;
+  }
+
+  // 图片回答在某些 DOM（文档对象模型）结构下可能提取不到正文，这里做稳定兜底。
+  const status = String(round?.status || "");
+  const isSettled = status !== "pending_reply" && status !== "streaming";
+  const imageFallback = round?.hasImageReply === true || (isSettled && hasImageIntent(round?.userText));
+  return imageFallback ? "生成图片" : "";
 }
 
 function hexToRgbString(hexColor) {
@@ -33,16 +52,22 @@ function hexToRgbString(hexColor) {
   return `${r}, ${g}, ${b}`;
 }
 
+/**
+ * 面板视图层：负责一级“问答轮次导航”和二级“章节导航”的渲染与交互。
+ */
 export class PanelView {
   constructor(options) {
     this.logger = options.logger;
     this.onRoundClick = options.onRoundClick;
+    this.onRoundSectionClick = options.onRoundSectionClick;
+    this.onSectionClick = options.onSectionClick;
     this.onToggleCollapse = options.onToggleCollapse;
 
     this.root = null;
     this.shell = null;
     this.collapseButton = null;
     this.expandButton = null;
+    this.searchWrap = null;
     this.searchInput = null;
     this.listContainer = null;
     this.emptyState = null;
@@ -50,7 +75,13 @@ export class PanelView {
     this.allRounds = [];
     this.filteredRounds = [];
     this.activeRoundId = null;
-    this.itemNodeMap = new Map();
+    this.roundItemNodeMap = new Map();
+
+    this.sectionRoundId = null;
+    this.sectionItems = [];
+    this.activeSectionId = null;
+    this.inlineSectionNodeMap = new Map();
+
     this.collapsed = false;
 
     this.suppressNextExpandClick = false;
@@ -108,6 +139,7 @@ export class PanelView {
     document.body.appendChild(this.root);
 
     this.shell = this.root.querySelector(".ccn-shell");
+    this.searchWrap = this.root.querySelector(".ccn-search-wrap");
     this.collapseButton = this.root.querySelector("[data-action='collapse']");
     this.expandButton = this.root.querySelector(".ccn-expand-btn");
     this.searchInput = this.root.querySelector(".ccn-search-input");
@@ -123,6 +155,7 @@ export class PanelView {
     this.searchInput.addEventListener("input", () => this.debouncedFilter());
     window.addEventListener("resize", this.boundHandleWindowResize, { passive: true });
 
+    this.updateViewModeUI();
     this.logger.info("导航面板挂载完成。");
   }
 
@@ -173,7 +206,8 @@ export class PanelView {
     window.removeEventListener("resize", this.boundHandleWindowResize);
     this.root.remove();
     this.root = null;
-    this.itemNodeMap.clear();
+    this.roundItemNodeMap.clear();
+    this.inlineSectionNodeMap.clear();
   }
 
   setCollapsed(collapsed, options = {}) {
@@ -194,24 +228,108 @@ export class PanelView {
   setRounds(rounds) {
     this.allRounds = Array.isArray(rounds) ? rounds : [];
     this.applyFilter(this.searchInput?.value || "");
+
+    if (this.sectionRoundId) {
+      const sectionRound = this.allRounds.find((item) => item.id === this.sectionRoundId);
+      if (!sectionRound || sectionRound.hasSections !== true) {
+        // 当前章节所属轮次失效时，显示空态，由 main 层决定是否自动回退。
+        this.syncSectionViewRound(null);
+        return;
+      }
+      this.syncSectionViewRound(sectionRound, {
+        preferredSectionId: this.activeSectionId
+      });
+    }
   }
 
   setActiveRound(roundId) {
     this.activeRoundId = roundId;
+    const shouldShowRoundActive = !this.sectionRoundId;
 
-    for (const [id, node] of this.itemNodeMap.entries()) {
-      node.classList.toggle("is-active", id === roundId);
+    for (const [id, node] of this.roundItemNodeMap.entries()) {
+      node.classList.toggle("is-active", shouldShowRoundActive && id === roundId);
+      node.classList.toggle("is-section-open", id === this.sectionRoundId);
     }
 
     this.ensureActiveVisible();
   }
 
+  setActiveSection(sectionId) {
+    this.activeSectionId = sectionId || null;
+
+    for (const [id, node] of this.inlineSectionNodeMap.entries()) {
+      node.classList.toggle("is-active", id === this.activeSectionId);
+    }
+
+    this.ensureActiveVisible();
+  }
+
+  getActiveRoundId() {
+    return this.activeRoundId;
+  }
+
+  getViewMode() {
+    return this.sectionRoundId ? "sections-inline" : "rounds";
+  }
+
+  getSectionViewState() {
+    return {
+      roundId: this.sectionRoundId,
+      activeSectionId: this.activeSectionId
+    };
+  }
+
+  openSectionView(round) {
+    this.sectionRoundId = round?.id || null;
+    this.sectionItems = Array.isArray(round?.sections) ? round.sections : [];
+    this.activeSectionId = null;
+    this.activeRoundId = round?.id || this.activeRoundId;
+
+    this.updateViewModeUI();
+    this.renderRoundList();
+  }
+
+  syncSectionViewRound(round, options = {}) {
+    this.sectionRoundId = round?.id || null;
+    this.sectionItems = Array.isArray(round?.sections) ? round.sections : [];
+
+    const preferredSectionId = options.preferredSectionId || this.activeSectionId;
+    const hasPreferred = this.sectionItems.some((item) => item.id === preferredSectionId);
+    this.activeSectionId = hasPreferred ? preferredSectionId : null;
+
+    this.updateViewModeUI();
+    this.renderRoundList();
+  }
+
+  backToRoundView(options = {}) {
+    this.sectionRoundId = null;
+    this.sectionItems = [];
+    this.activeSectionId = null;
+    this.inlineSectionNodeMap.clear();
+
+    if (options.roundId) {
+      this.activeRoundId = options.roundId;
+    }
+
+    this.updateViewModeUI();
+    this.renderRoundList();
+    this.setActiveRound(this.activeRoundId);
+  }
+
   ensureActiveVisible() {
+    if (this.activeSectionId) {
+      const sectionNode = this.inlineSectionNodeMap.get(this.activeSectionId);
+      if (sectionNode && sectionNode.parentElement) {
+        sectionNode.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        return;
+      }
+    }
+
     if (!this.activeRoundId) {
       return;
     }
 
-    const node = this.itemNodeMap.get(this.activeRoundId);
+    const node = this.roundItemNodeMap.get(this.activeRoundId);
     if (!node || node.parentElement !== this.listContainer) {
       return;
     }
@@ -268,9 +386,10 @@ export class PanelView {
     const item = document.createElement("li");
     item.className = "ccn-item";
 
-    const button = document.createElement("button");
-    button.type = "button";
+    const button = document.createElement("div");
     button.className = "ccn-item-btn";
+    button.setAttribute("role", "button");
+    button.setAttribute("tabindex", "0");
 
     const { rulerNode, labelNode } = this.createRulerNode();
 
@@ -287,17 +406,39 @@ export class PanelView {
     statusNode.className = "ccn-item-status";
     statusNode.hidden = true;
 
+    const sectionActionNode = document.createElement("span");
+    sectionActionNode.className = "ccn-item-section-action";
+    sectionActionNode.hidden = true;
+
+    const sectionDivider = document.createElement("span");
+    sectionDivider.className = "ccn-item-section-divider";
+    sectionDivider.textContent = "|";
+
+    const sectionNavBtn = document.createElement("button");
+    sectionNavBtn.type = "button";
+    sectionNavBtn.className = "ccn-item-inline-section-btn";
+    sectionNavBtn.textContent = SECTION_BUTTON_TEXT;
+    sectionNavBtn.hidden = true;
+
     const previewNode = document.createElement("span");
     previewNode.className = "ccn-item-preview";
 
+    const inlineSectionListNode = document.createElement("ul");
+    inlineSectionListNode.className = "ccn-inline-section-list";
+    inlineSectionListNode.hidden = true;
+
     headNode.appendChild(titleNode);
     headNode.appendChild(statusNode);
+    sectionActionNode.appendChild(sectionDivider);
+    sectionActionNode.appendChild(sectionNavBtn);
+    headNode.appendChild(sectionActionNode);
     contentNode.appendChild(headNode);
     contentNode.appendChild(previewNode);
 
     button.appendChild(contentNode);
     item.appendChild(rulerNode);
     item.appendChild(button);
+    item.appendChild(inlineSectionListNode);
 
     button.addEventListener("click", () => {
       // 点击后让按钮失焦，避免滚轮焦点停留在面板控件上。
@@ -308,15 +449,80 @@ export class PanelView {
       }
     });
 
+    button.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      event.preventDefault();
+      button.blur();
+      const roundId = item.dataset.roundId;
+      if (roundId && typeof this.onRoundClick === "function") {
+        this.onRoundClick(roundId);
+      }
+    });
+
+    sectionNavBtn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const roundId = item.dataset.roundId;
+      if (roundId && typeof this.onRoundSectionClick === "function") {
+        this.onRoundSectionClick(roundId);
+      }
+    });
+
     item.__ccnRefs = {
       button,
       rulerNode,
       labelNode,
       titleNode,
       statusNode,
-      previewNode
+      previewNode,
+      sectionActionNode,
+      sectionDivider,
+      sectionNavBtn,
+      inlineSectionListNode
     };
 
+    return item;
+  }
+
+  createSectionItem(section) {
+    const item = document.createElement("li");
+    item.className = "ccn-inline-section-item";
+    item.dataset.sectionId = section.id;
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ccn-inline-section-btn";
+    button.setAttribute("aria-label", `跳转到章节：${section.title}`);
+
+    const indexNode = document.createElement("span");
+    indexNode.className = "ccn-inline-section-index";
+    indexNode.textContent = String(section.index);
+
+    const textNode = document.createElement("span");
+    textNode.className = "ccn-inline-section-title";
+    const title = String(section?.title || "").trim();
+    textNode.textContent = title || `章节 ${section.index}`;
+
+    button.appendChild(indexNode);
+    button.appendChild(textNode);
+    item.appendChild(button);
+
+    button.addEventListener("click", () => {
+      button.blur();
+      if (typeof this.onSectionClick === "function") {
+        this.onSectionClick(section.id);
+      }
+    });
+
+    return item;
+  }
+
+  createSectionEmptyItem() {
+    const item = document.createElement("li");
+    item.className = "ccn-inline-section-empty";
+    item.textContent = SECTION_EMPTY_TEXT;
     return item;
   }
 
@@ -365,6 +571,28 @@ export class PanelView {
     // 清理旧版本遗留的纵向轨道线节点。
     item.querySelectorAll(".ccn-ruler-rail").forEach((node) => node.remove());
 
+    const hasSections = round.hasSections === true;
+    const isExpanded = hasSections && round.id === this.sectionRoundId;
+    const expandedSectionSignature = isExpanded
+      ? this.sectionItems.map((section) => `${section.id}:${section.title}:${section.index}`).join("|")
+      : "";
+    const nextRenderKey = [
+      round.id,
+      round.index,
+      round.title,
+      round.status,
+      round.assistantPreview,
+      round.hasImageReply ? "1" : "0",
+      hasSections ? "1" : "0",
+      isExpanded ? "1" : "0",
+      expandedSectionSignature
+    ].join("::");
+
+    if (item.dataset.renderKey === nextRenderKey) {
+      return;
+    }
+    item.dataset.renderKey = nextRenderKey;
+
     item.dataset.roundId = round.id;
     refs.button.setAttribute("aria-label", `跳转到第${round.index}轮对话`);
 
@@ -376,16 +604,47 @@ export class PanelView {
     refs.statusNode.className = "ccn-item-status";
     refs.statusNode.textContent = "";
 
-    const previewText = String(round.assistantPreview || "").trim();
-    if (previewText) {
+    item.classList.toggle("is-section-open", isExpanded);
+    refs.sectionActionNode.hidden = !hasSections;
+    refs.sectionNavBtn.hidden = !hasSections;
+    refs.sectionNavBtn.dataset.expanded = isExpanded ? "1" : "0";
+    refs.sectionNavBtn.setAttribute("aria-pressed", isExpanded ? "true" : "false");
+    refs.sectionNavBtn.textContent = SECTION_BUTTON_TEXT;
+    refs.sectionNavBtn.setAttribute("aria-label", isExpanded ? `收起第${round.index}轮章节` : `打开第${round.index}轮回答的章节导航`);
+    refs.sectionNavBtn.onmouseenter = () => {
+      refs.sectionNavBtn.textContent = refs.sectionNavBtn.dataset.expanded === "1" ? "收起" : SECTION_BUTTON_TEXT;
+    };
+    refs.sectionNavBtn.onmouseleave = () => {
+      refs.sectionNavBtn.textContent = SECTION_BUTTON_TEXT;
+    };
+
+    const finalPreview = resolveRoundPreview(round);
+    if (finalPreview) {
       refs.previewNode.classList.remove("is-empty");
       refs.previewNode.removeAttribute("aria-hidden");
-      refs.previewNode.textContent = previewText;
+      refs.previewNode.textContent = finalPreview;
     } else {
       // 无回复时保留一行占位，避免列表高度在刷新时跳动。
       refs.previewNode.classList.add("is-empty");
       refs.previewNode.setAttribute("aria-hidden", "true");
       refs.previewNode.textContent = "　";
+    }
+
+    const inlineSections = isExpanded ? this.sectionItems : [];
+    refs.inlineSectionListNode.hidden = !isExpanded;
+    refs.inlineSectionListNode.textContent = "";
+
+    if (inlineSections.length > 0) {
+      const fragment = document.createDocumentFragment();
+      for (const section of inlineSections) {
+        const sectionNode = this.createSectionItem(section);
+        sectionNode.classList.toggle("is-active", section.id === this.activeSectionId);
+        this.inlineSectionNodeMap.set(section.id, sectionNode);
+        fragment.appendChild(sectionNode);
+      }
+      refs.inlineSectionListNode.appendChild(fragment);
+    } else if (isExpanded) {
+      refs.inlineSectionListNode.appendChild(this.createSectionEmptyItem());
     }
   }
 
@@ -395,48 +654,55 @@ export class PanelView {
     }
 
     const validRoundIds = new Set(this.allRounds.map((round) => round.id));
-    const visibleRoundIds = new Set();
     const fragment = document.createDocumentFragment();
 
     // 先清理掉已失效轮次，避免 DOM（文档对象模型）缓存持续膨胀。
-    for (const [id, node] of this.itemNodeMap.entries()) {
-      if (validRoundIds.has(id)) {
-        continue;
+    for (const [id] of this.roundItemNodeMap.entries()) {
+      if (!validRoundIds.has(id)) {
+        this.roundItemNodeMap.delete(id);
       }
-      if (node.parentElement === this.listContainer) {
-        this.listContainer.removeChild(node);
-      }
-      this.itemNodeMap.delete(id);
     }
 
+    this.inlineSectionNodeMap.clear();
+    this.listContainer.textContent = "";
+
     for (const round of this.filteredRounds) {
-      let item = this.itemNodeMap.get(round.id);
+      let item = this.roundItemNodeMap.get(round.id);
       if (!item) {
         item = this.createRoundItem();
-        this.itemNodeMap.set(round.id, item);
+        this.roundItemNodeMap.set(round.id, item);
       }
 
       this.updateRoundItem(item, round);
-      item.classList.toggle("is-active", round.id === this.activeRoundId);
-      visibleRoundIds.add(round.id);
+      const shouldShowRoundActive = !this.sectionRoundId;
+      item.classList.toggle("is-active", shouldShowRoundActive && round.id === this.activeRoundId);
+      item.classList.toggle("is-section-open", round.id === this.sectionRoundId);
       fragment.appendChild(item);
     }
 
-    // 统一 append（追加）可复用节点，避免每次 innerHTML 全量重建导致闪烁。
     this.listContainer.appendChild(fragment);
 
-    for (const [id, node] of this.itemNodeMap.entries()) {
-      if (visibleRoundIds.has(id)) {
-        continue;
-      }
-      if (node.parentElement === this.listContainer) {
-        this.listContainer.removeChild(node);
-      }
-    }
-
     const hasResult = this.filteredRounds.length > 0;
+    this.emptyState.textContent = "没有匹配的对话，请换个关键词试试。";
     this.emptyState.hidden = hasResult;
     this.listContainer.hidden = !hasResult;
+  }
+
+  renderSectionList() {
+    // 兼容旧调用：现在章节渲染改为“当前列表内联展开”。保留空实现避免外部引用报错。
+    this.renderRoundList();
+  }
+
+  updateViewModeUI() {
+    if (!this.searchInput || !this.searchWrap || !this.listContainer || !this.emptyState) {
+      return;
+    }
+
+    this.root?.classList.toggle("is-section-inline", Boolean(this.sectionRoundId));
+    // 章节改为“列表内联展开”，不再切换到独立二级视图。
+    this.searchWrap.classList.remove("is-section-mode");
+    this.searchInput.hidden = false;
+    this.searchInput.disabled = false;
   }
 
   handleExpandClick(event) {

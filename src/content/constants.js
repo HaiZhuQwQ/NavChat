@@ -1,9 +1,15 @@
+// 全局常量：统一管理导航面板、章节导航与状态枚举的配置项。
 export const EXTENSION_NAME = "历史对话导航";
 
 export const THEME_PRIMARY = "#287CFF";
 export const PREVIEW_MAX_LENGTH = 24;
 export const MINOR_TICK_STEP = 5;
 export const MAJOR_TICK_STEP = 5;
+export const SECTION_BUTTON_TEXT = "章节";
+export const SECTION_EMPTY_TEXT = "未检测到可导航章节";
+export const SECTION_MIN_COUNT = 2;
+export const SECTION_MAX_COUNT = 8;
+export const SECTION_MIN_BODY_LENGTH = 80;
 
 export const STORAGE_KEYS = {
   PANEL_COLLAPSED: "ccn_panel_collapsed",

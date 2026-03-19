@@ -1,3 +1,4 @@
+// 主入口：负责初始化、轮次解析刷新、面板与滚动管理器编排。
 import { CONFIG } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { DomAdapter } from "./dom-adapter.js";
@@ -26,6 +27,65 @@ function isEligiblePath(pathname) {
     return true;
   }
   return ["/c/", "/g/", "/share/"].some((prefix) => pathname.startsWith(prefix));
+}
+
+function areSectionListsEquivalent(prevSections, nextSections) {
+  const prev = Array.isArray(prevSections) ? prevSections : [];
+  const next = Array.isArray(nextSections) ? nextSections : [];
+  if (prev.length !== next.length) {
+    return false;
+  }
+
+  for (let i = 0; i < prev.length; i += 1) {
+    const left = prev[i];
+    const right = next[i];
+    if (
+      left?.id !== right?.id
+      || left?.title !== right?.title
+      || left?.level !== right?.level
+      || left?.index !== right?.index
+      || left?.element !== right?.element
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function areRoundListsEquivalent(prevRounds, nextRounds) {
+  const prev = Array.isArray(prevRounds) ? prevRounds : [];
+  const next = Array.isArray(nextRounds) ? nextRounds : [];
+  if (prev.length !== next.length) {
+    return false;
+  }
+
+  for (let i = 0; i < prev.length; i += 1) {
+    const left = prev[i];
+    const right = next[i];
+    const leftAssistantEls = left?.assistantMessageEls || [];
+    const rightAssistantEls = right?.assistantMessageEls || [];
+    const sameAssistantAnchors = leftAssistantEls.length === rightAssistantEls.length
+      && leftAssistantEls.every((el, idx) => el === rightAssistantEls[idx]);
+
+    if (
+      left?.id !== right?.id
+      || left?.index !== right?.index
+      || left?.title !== right?.title
+      || left?.status !== right?.status
+      || left?.assistantPreview !== right?.assistantPreview
+      || left?.hasImageReply !== right?.hasImageReply
+      || left?.hasSections !== right?.hasSections
+      || left?.userAnchorEl !== right?.userAnchorEl
+      || left?.sectionSourceEl !== right?.sectionSourceEl
+      || sameAssistantAnchors === false
+      || areSectionListsEquivalent(left?.sections, right?.sections) === false
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 async function waitForConversationContainer(adapter, logger) {
@@ -120,6 +180,7 @@ async function bootstrap() {
   window[RUNTIME_INSTANCE_KEY] = runtime;
 
   logger.info("扩展启动。", {
+    build: "section-nav-v1.4-panel-inline",
     href: location.href,
     userAgent: navigator.userAgent
   });
@@ -159,10 +220,44 @@ async function bootstrap() {
   }
 
   const roundIdManager = new RoundIdManager();
+  let latestRounds = [];
+  let latestRoundMap = new Map();
+  let activeRoundBeforeSectionView = null;
+
+  // 打开二级章节视图：先记录当前轮次高亮，再切换到章节模式。
+  const openSectionViewByRound = (roundId) => {
+    const sectionState = panelView.getSectionViewState();
+    if (sectionState.roundId === roundId) {
+      panelView.backToRoundView({ roundId: activeRoundBeforeSectionView });
+      scrollManager.clearSections();
+      scrollManager.setViewMode("rounds");
+      scrollManager.detectActiveRound("section-collapse");
+      activeRoundBeforeSectionView = null;
+      return;
+    }
+
+    const latestRound = latestRoundMap.get(roundId);
+    if (!latestRound || latestRound.hasSections !== true || !Array.isArray(latestRound.sections)) {
+      return;
+    }
+
+    activeRoundBeforeSectionView = panelView.getActiveRoundId();
+    panelView.openSectionView(latestRound);
+    scrollManager.setSections(latestRound.id, latestRound.sections);
+    scrollManager.setViewMode("sections");
+    scrollManager.detectActiveSection("open-sections");
+  };
+
   const panelView = new PanelView({
     logger: createLogger("panel-view"),
     onRoundClick: (roundId) => {
       scrollManager.scrollToRound(roundId);
+    },
+    onRoundSectionClick: (roundId) => {
+      openSectionViewByRound(roundId);
+    },
+    onSectionClick: (sectionId) => {
+      scrollManager.scrollToSection(sectionId);
     },
     onToggleCollapse: (collapsed) => {
       savePanelCollapsed(collapsed).catch((error) => {
@@ -176,6 +271,9 @@ async function bootstrap() {
     offsetPx: CONFIG.SCROLL_TOP_OFFSET_PX,
     onActiveRoundChange: (roundId) => {
       panelView.setActiveRound(roundId);
+    },
+    onActiveSectionChange: (sectionId) => {
+      panelView.setActiveSection(sectionId);
     }
   });
 
@@ -194,8 +292,49 @@ async function bootstrap() {
       logger: parserLogger
     });
 
+    const roundsChanged = !areRoundListsEquivalent(latestRounds, rounds);
+    if (!roundsChanged) {
+      logger.debug("轮次数据未变化，跳过重渲染。");
+      scrollManager.detectByView("rounds-unchanged-skip-render");
+      return;
+    }
+
+    latestRounds = rounds;
+    latestRoundMap = new Map(rounds.map((round) => [round.id, round]));
+
     panelView.setRounds(rounds);
     scrollManager.setRounds(rounds);
+
+    const sectionState = panelView.getSectionViewState();
+    if (!sectionState.roundId) {
+      scrollManager.clearSections();
+      scrollManager.setViewMode("rounds");
+      return;
+    }
+
+    const targetRound = latestRoundMap.get(sectionState.roundId);
+    const isValidSectionRound = Boolean(
+      targetRound &&
+      targetRound.hasSections === true &&
+      targetRound.sectionSourceEl instanceof HTMLElement &&
+      targetRound.sectionSourceEl.isConnected
+    );
+
+    if (!isValidSectionRound) {
+      panelView.backToRoundView({ roundId: activeRoundBeforeSectionView });
+      scrollManager.clearSections();
+      scrollManager.setViewMode("rounds");
+      scrollManager.detectActiveRound("section-invalid-round");
+      activeRoundBeforeSectionView = null;
+      return;
+    }
+
+    panelView.syncSectionViewRound(targetRound, {
+      preferredSectionId: sectionState.activeSectionId
+    });
+    scrollManager.setSections(targetRound.id, targetRound.sections);
+    scrollManager.setViewMode("sections");
+    scrollManager.detectActiveSection("sections-refreshed");
   };
 
   const debouncedRefresh = debounce(() => {

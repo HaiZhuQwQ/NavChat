@@ -105,6 +105,17 @@ function normalizeText(value) {
     .trim();
 }
 
+function hasLikelyImageNode(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+  return Boolean(
+    element.querySelector(
+      "img, picture, canvas, svg image, figure img, video, [role='img'], [aria-label*='image'], [aria-label*='图片'], [data-testid*='image'], [data-testid*='dalle']"
+    )
+  );
+}
+
 function textScore(value) {
   const normalized = normalizeText(value);
   if (!normalized) {
@@ -167,7 +178,8 @@ export class DomAdapter {
     if (ordered.length === 0) {
       this.emptyMessageScanCount += 1;
       const containerTextLength = normalizeText(container?.textContent || "").length;
-      const shouldWarn = this.emptyMessageScanCount >= 4 && containerTextLength > 20;
+      // 页面初始阶段常出现短暂空扫描，延后告警以减少误报噪音。
+      const shouldWarn = this.emptyMessageScanCount >= 8 && containerTextLength > 20;
 
       if (shouldWarn) {
         this.logger.warn("主对话容器已找到，但消息节点匹配为空。", {
@@ -231,6 +243,18 @@ export class DomAdapter {
       return "assistant";
     }
 
+    // 兜底：很多页面改版会把 role 放在外层 turn（轮次）容器上。
+    const turnHintNode = element.closest("[data-testid*='conversation-turn-user'], [data-testid*='conversation-turn-assistant']");
+    if (turnHintNode instanceof HTMLElement) {
+      const turnTestId = normalizeText(turnHintNode.getAttribute("data-testid")).toLowerCase();
+      if (turnTestId.includes("conversation-turn-user")) {
+        return "user";
+      }
+      if (turnTestId.includes("conversation-turn-assistant")) {
+        return "assistant";
+      }
+    }
+
     const hintNodes = this._queryHints(element, "messageRoleHints");
     for (const node of hintNodes) {
       const dataRole = normalizeText(node.getAttribute("data-message-author-role")).toLowerCase();
@@ -248,6 +272,11 @@ export class DomAdapter {
       if (this._containsKeyword(allHints, ROLE_KEYWORDS.assistant)) {
         return "assistant";
       }
+    }
+
+    // 最后兜底：若节点明显是图片回答容器，按 assistant 处理，避免“生成图片”预览丢失。
+    if (hasLikelyImageNode(element)) {
+      return "assistant";
     }
 
     // 若角色完全未知，返回 unknown，由解析器选择跳过该节点。

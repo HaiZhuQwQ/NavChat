@@ -1,5 +1,13 @@
-import { PREVIEW_MAX_LENGTH, ROUND_STATUS } from "./constants.js";
+// 轮次解析层：把页面消息组装为“用户问题 + assistant 回复”的结构化轮次数据。
+import {
+  PREVIEW_MAX_LENGTH,
+  ROUND_STATUS,
+  SECTION_MAX_COUNT,
+  SECTION_MIN_BODY_LENGTH,
+  SECTION_MIN_COUNT
+} from "./constants.js";
 import { extractRoundTitle } from "./title-extractor.js";
+import { extractAnswerSections } from "./answer-outline.js";
 
 const LOW_INFO_PREFIXES = [
   "可以",
@@ -24,6 +32,10 @@ function normalizeInlineText(text) {
   return String(text || "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function hasImageIntent(text) {
+  return /(?:图片|配图|画图|插画|海报|logo|图标|image|illustration|poster|icon|dalle)/i.test(String(text || ""));
 }
 
 function buildTitleFallbackFromUserText(userText) {
@@ -145,6 +157,74 @@ function hasNaturalLanguage(text) {
   return /[\u4e00-\u9fa5]/.test(normalized) || /[A-Za-z]{3,}/.test(normalized);
 }
 
+function hasLikelyMediaNode(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+
+  if (
+    element.querySelector(
+      "img, picture, canvas, svg, svg image, figure img, video, [role='img'], [aria-label*='image'], [aria-label*='图片'], [style*='background-image'], [data-testid*='image'], [data-testid*='dalle']"
+    )
+  ) {
+    return true;
+  }
+
+  // 兜底：可视节点很多但文本极少，通常是图片容器。
+  const allNodeCount = element.querySelectorAll("*").length;
+  if (allNodeCount >= 16) {
+    const rect = element.getBoundingClientRect();
+    const hasLargeVisualBlock = rect.width >= 120 && rect.height >= 90;
+    const textLength = normalizeInlineText(element.textContent || "").length;
+    if (hasLargeVisualBlock && textLength <= 10) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasImageLikeContent(assistantMessages) {
+  return assistantMessages.some((item) => {
+    const element = item?.element;
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    const scopeCandidates = [
+      element,
+      element.closest("[data-message-id]"),
+      element.closest("[data-testid*='conversation-turn']"),
+      element.parentElement
+    ].filter(Boolean);
+
+    for (const scope of scopeCandidates) {
+      if (hasLikelyMediaNode(scope)) {
+        return true;
+      }
+    }
+
+    // 图片回答常见于可视节点，统一归类为“生成图片”。
+    // 兼容 Markdown 图片语法（当页面结构变化导致图片节点未直接命中时）。
+    const text = String(item?.text || "");
+    return /!\[[^\]]*\]\([^)]+\)/.test(text) || /(?:生成|created).*(?:图片|image)/i.test(text);
+  });
+}
+
+function hasVisualOnlyReply(assistantMessages) {
+  return assistantMessages.some((item) => {
+    const element = item?.element;
+    if (!(element instanceof HTMLElement)) {
+      return false;
+    }
+
+    const text = normalizeInlineText(item?.text || "");
+    const hasRichVisualNode = hasLikelyMediaNode(element);
+
+    return hasRichVisualNode && text.length <= 6;
+  });
+}
+
 function isLowInfoSentence(text) {
   const normalized = normalizeInlineText(text).replace(/^[，,。.!！？?：:;；\-\s]+/, "");
   if (!normalized) {
@@ -185,19 +265,22 @@ function pickMeaningfulSentence(text) {
   return "";
 }
 
-function buildAssistantPreview(assistantMessages) {
+function buildAssistantPreview(assistantMessages, options = {}) {
+  const imageReply = options.hasImageReply === true || hasImageLikeContent(assistantMessages);
+  const visualOnlyReply = hasVisualOnlyReply(assistantMessages);
+
   // assistantPreview（助手预览）优先取“首条有效回复”，更贴近该轮最初语义。
   const firstValidReply = assistantMessages
     .map((item) => String(item.text || ""))
     .find((text) => text.length > 0);
 
   if (!firstValidReply) {
-    return "";
+    return imageReply || visualOnlyReply ? "生成图片" : "";
   }
 
   const cleaned = cleanForPreview(firstValidReply);
   if (!cleaned) {
-    return "";
+    return imageReply || visualOnlyReply ? "生成图片" : "";
   }
 
   const paragraphs = splitParagraphs(cleaned);
@@ -224,7 +307,11 @@ function buildAssistantPreview(assistantMessages) {
   }
 
   // 全部段落都无可用自然语言时，返回空串，交给渲染层做空态占位。
-  return "";
+  return imageReply || visualOnlyReply ? "生成图片" : "";
+}
+
+function detectImageReply(assistantMessages) {
+  return hasImageLikeContent(assistantMessages) || hasVisualOnlyReply(assistantMessages);
 }
 
 function ensureMeaningfulTitle(title, userText, roundIndex) {
@@ -265,6 +352,10 @@ function summarizeRoundStatus(round) {
 
   const allEmpty = round.assistantMessages.every((item) => item.state.isEmpty);
   if (allEmpty) {
+    // 图片回复常见“文本为空但可视内容存在”，此时按已完成处理。
+    if (detectImageReply(round.assistantMessages)) {
+      return ROUND_STATUS.COMPLETE;
+    }
     return ROUND_STATUS.EMPTY;
   }
 
@@ -339,10 +430,52 @@ export function buildConversationRounds(messageElements, options) {
     const index = idx + 1;
     const status = summarizeRoundStatus(round);
     const title = ensureMeaningfulTitle(extractRoundTitle(round.userText, index), round.userText, index);
-    const assistantPreview = buildAssistantPreview(round.assistantMessages);
+    const hasImageReply = detectImageReply(round.assistantMessages);
+    const assistantPreview = buildAssistantPreview(round.assistantMessages, {
+      hasImageReply
+    });
     const id = roundIdManager.assign(round, index);
     const assistantMessageEls = round.assistantMessages.map((item) => item.element);
     const assistantText = round.assistantMessages.map((item) => item.text).join(" ");
+    const userAskedForImage = hasImageIntent(round.userText);
+    const canUseIntentFallback = userAskedForImage
+      && round.assistantMessages.length > 0
+      && status !== ROUND_STATUS.PENDING_REPLY
+      && status !== ROUND_STATUS.STREAMING;
+    const imageLikeByIntent = !assistantPreview && canUseIntentFallback;
+    const resolvedHasImageReply = hasImageReply || imageLikeByIntent;
+    const resolvedAssistantPreview = assistantPreview
+      || (resolvedHasImageReply ? "生成图片" : "")
+      || (
+        !assistantPreview
+          && userAskedForImage
+          && (status === ROUND_STATUS.COMPLETE || status === ROUND_STATUS.EMPTY)
+          ? "生成图片"
+          : ""
+      );
+    const firstAssistantMessage = round.assistantMessages.find((item) => item?.element);
+
+    // 章节导航仅在“已完成回答”触发，避免流式阶段反复抖动。
+    let sectionSourceEl = null;
+    let sections = [];
+    let hasSections = false;
+    if (status === ROUND_STATUS.COMPLETE && firstAssistantMessage) {
+      const sectionResult = extractAnswerSections({
+        roundId: id,
+        assistantElement: firstAssistantMessage.element,
+        assistantText: firstAssistantMessage.text,
+        logger,
+        config: {
+          minCount: SECTION_MIN_COUNT,
+          maxCount: SECTION_MAX_COUNT,
+          minBodyLength: SECTION_MIN_BODY_LENGTH
+        }
+      });
+
+      sectionSourceEl = sectionResult.sectionSourceEl;
+      sections = sectionResult.sections;
+      hasSections = sectionResult.canShowButton === true && sections.length >= SECTION_MIN_COUNT;
+    }
 
     return {
       id,
@@ -352,15 +485,20 @@ export function buildConversationRounds(messageElements, options) {
       userText: round.userText,
       userAnchorEl: round.userAnchorEl,
       assistantMessageEls,
-      assistantPreview,
-      searchText: `${title} ${assistantPreview} ${round.userText} ${assistantText}`.trim(),
-      assistantMessages: round.assistantMessages
+      assistantPreview: resolvedAssistantPreview,
+      hasImageReply: resolvedHasImageReply,
+      searchText: `${title} ${resolvedAssistantPreview} ${round.userText} ${assistantText}`.trim(),
+      assistantMessages: round.assistantMessages,
+      sectionSourceEl,
+      sections,
+      hasSections
     };
   });
 
   logger.info("轮次解析完成。", {
     messageCount: normalized.length,
-    roundCount: finalized.length
+    roundCount: finalized.length,
+    sectionRoundCount: finalized.filter((round) => round.hasSections === true).length
   });
 
   return finalized;
