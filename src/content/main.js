@@ -1,14 +1,23 @@
-// 主入口：负责初始化、轮次解析刷新、面板与滚动管理器编排。
+// 主入口：负责初始化、平台适配器选择、轮次解析刷新、面板与滚动管理器编排。
 import { CONFIG } from "./constants.js";
 import { createLogger } from "./logger.js";
-import { DomAdapter } from "./dom-adapter.js";
 import { RoundIdManager } from "./round-id.js";
-import { buildConversationRounds } from "./conversation-parser.js";
+import { buildConversationRounds } from "./core/conversation-parser.js";
+import { collectUnifiedMessages } from "./core/message-pipeline.js";
+import { AdapterRegistry } from "./core/adapter-registry.js";
+import { ChatGPTAdapter } from "./adapters/chatgpt-adapter.js";
 import { PanelView } from "./panel-view.js";
 import { ScrollManager } from "./scroll-manager.js";
 import { loadPanelCollapsed, savePanelCollapsed } from "./state-store.js";
 
 const RUNTIME_INSTANCE_KEY = "__CCN_RUNTIME_INSTANCE__";
+const CONVERSATION_MUTATION_SELECTOR = [
+  "[data-message-author-role]",
+  "[data-testid*='conversation-turn']",
+  "[data-message-id]",
+  "[data-testid='conversation-turn-content']",
+  ".markdown"
+].join(", ");
 
 function debounce(fn, delayMs) {
   let timer = null;
@@ -18,15 +27,68 @@ function debounce(fn, delayMs) {
   };
 }
 
-function isSupportedHost(hostname) {
-  return hostname === "chatgpt.com" || hostname === "chat.openai.com";
+function toElement(node) {
+  if (node instanceof HTMLElement) {
+    return node;
+  }
+  if (node instanceof Text) {
+    return node.parentElement;
+  }
+  return null;
 }
 
-function isEligiblePath(pathname) {
-  if (pathname === "/") {
+function isInsideNavChatPanel(element) {
+  return element instanceof HTMLElement && Boolean(element.closest("#ccn-root"));
+}
+
+function hasConversationMarker(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+  if (isInsideNavChatPanel(element)) {
+    return false;
+  }
+
+  if (element.matches(CONVERSATION_MUTATION_SELECTOR)) {
     return true;
   }
-  return ["/c/", "/g/", "/share/"].some((prefix) => pathname.startsWith(prefix));
+  if (element.closest(CONVERSATION_MUTATION_SELECTOR)) {
+    return true;
+  }
+  if (element.childElementCount > 0 && element.querySelector(CONVERSATION_MUTATION_SELECTOR)) {
+    return true;
+  }
+  return false;
+}
+
+function shouldRefreshByMutations(mutations) {
+  if (!Array.isArray(mutations) || mutations.length === 0) {
+    return false;
+  }
+
+  for (const mutation of mutations) {
+    if (!mutation) {
+      continue;
+    }
+
+    const targetElement = toElement(mutation.target);
+    if (hasConversationMarker(targetElement)) {
+      return true;
+    }
+
+    if (mutation.type !== "childList") {
+      continue;
+    }
+
+    const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    for (const node of changedNodes) {
+      if (hasConversationMarker(toElement(node))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function areSectionListsEquivalent(prevSections, nextSections) {
@@ -39,6 +101,7 @@ function areSectionListsEquivalent(prevSections, nextSections) {
   for (let i = 0; i < prev.length; i += 1) {
     const left = prev[i];
     const right = next[i];
+    // 仅比较当前渲染与滚动链路实际消费的字段，避免无效字段导致重复重渲染。
     if (
       left?.id !== right?.id
       || left?.title !== right?.title
@@ -46,7 +109,6 @@ function areSectionListsEquivalent(prevSections, nextSections) {
       || left?.index !== right?.index
       || left?.groupId !== right?.groupId
       || left?.itemType !== right?.itemType
-      || left?.sourceType !== right?.sourceType
       || left?.element !== right?.element
     ) {
       return false;
@@ -71,7 +133,6 @@ function areSectionGroupListsEquivalent(prevGroups, nextGroups) {
       || left?.title !== right?.title
       || left?.level !== right?.level
       || left?.index !== right?.index
-      || left?.sourceType !== right?.sourceType
       || left?.element !== right?.element
       || areSectionListsEquivalent(left?.children, right?.children) === false
     ) {
@@ -118,75 +179,6 @@ function areRoundListsEquivalent(prevRounds, nextRounds) {
   return true;
 }
 
-async function waitForConversationContainer(adapter, logger) {
-  const startAt = Date.now();
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let pollTimer = null;
-    let timeoutTimer = null;
-    let observer = null;
-
-    const finish = (container, reason) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      if (pollTimer) {
-        clearInterval(pollTimer);
-      }
-      if (timeoutTimer) {
-        clearTimeout(timeoutTimer);
-      }
-      if (observer) {
-        observer.disconnect();
-      }
-
-      if (container) {
-        logger.info("主对话容器就绪。", {
-          reason,
-          costMs: Date.now() - startAt
-        });
-      } else {
-        logger.warn("等待主对话容器超时。", {
-          reason,
-          costMs: Date.now() - startAt
-        });
-      }
-
-      resolve(container || null);
-    };
-
-    const checkNow = (reason) => {
-      const container = adapter.findConversationContainer(document, { silent: true });
-      if (container) {
-        finish(container, reason);
-      }
-    };
-
-    checkNow("initial-check");
-
-    pollTimer = setInterval(() => {
-      checkNow("polling");
-    }, CONFIG.WAIT_POLL_INTERVAL_MS);
-
-    observer = new MutationObserver(() => {
-      checkNow("mutation-observer");
-    });
-
-    if (document.body) {
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-    }
-
-    timeoutTimer = setTimeout(() => {
-      finish(null, "timeout");
-    }, CONFIG.WAIT_CONTAINER_TIMEOUT_MS);
-  });
-}
-
 async function bootstrap() {
   const logger = createLogger("main");
 
@@ -210,21 +202,22 @@ async function bootstrap() {
   window[RUNTIME_INSTANCE_KEY] = runtime;
 
   logger.info("扩展启动。", {
-    build: "section-nav-v1.4-panel-inline",
+    build: "section-nav-v1.5-adapter-core",
     href: location.href,
     userAgent: navigator.userAgent
   });
 
-  if (!isSupportedHost(location.hostname)) {
-    logger.info("当前域名不在支持范围内，已退出。", { hostname: location.hostname });
-    if (window[RUNTIME_INSTANCE_KEY] === runtime) {
-      delete window[RUNTIME_INSTANCE_KEY];
-    }
-    return;
-  }
+  const registry = new AdapterRegistry({ logger: createLogger("adapter-registry") });
+  registry.register(new ChatGPTAdapter(createLogger("chatgpt-adapter")));
 
-  if (!isEligiblePath(location.pathname)) {
-    logger.info("当前页面不是有效对话页，已退出。", {
+  const adapter = registry.resolve({
+    location,
+    document
+  });
+
+  if (!adapter) {
+    logger.info("当前页面未匹配可用平台 adapter，已退出。", {
+      hostname: location.hostname,
       pathname: location.pathname
     });
     if (window[RUNTIME_INSTANCE_KEY] === runtime) {
@@ -233,10 +226,11 @@ async function bootstrap() {
     return;
   }
 
-  const adapter = new DomAdapter(createLogger("dom-adapter"));
-  const container = await waitForConversationContainer(adapter, logger);
+  const container = await adapter.waitForReady({ document, logger });
   if (!container) {
-    logger.warn("未检测到有效对话容器，不挂载导航面板。");
+    logger.warn("未检测到有效对话容器，不挂载导航面板。", {
+      platform: adapter.platform
+    });
     if (window[RUNTIME_INSTANCE_KEY] === runtime) {
       delete window[RUNTIME_INSTANCE_KEY];
     }
@@ -253,6 +247,28 @@ async function bootstrap() {
   let latestRounds = [];
   let latestRoundMap = new Map();
   let activeRoundBeforeSectionView = null;
+  const sectionRetryMemo = new Map();
+  const SECTION_RETRY_COOLDOWN_MS = 2500;
+
+  const requestSectionRetryIfNeeded = (roundId) => {
+    if (!roundId) {
+      return;
+    }
+
+    const round = latestRoundMap.get(roundId);
+    if (!round || round.hasSections === true) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastRetryAt = sectionRetryMemo.get(roundId) || 0;
+    if (now - lastRetryAt < SECTION_RETRY_COOLDOWN_MS) {
+      return;
+    }
+
+    sectionRetryMemo.set(roundId, now);
+    debouncedRefresh();
+  };
 
   // 打开二级章节视图：先记录当前轮次高亮，再切换到章节模式。
   const openSectionViewByRound = (roundId) => {
@@ -282,6 +298,8 @@ async function bootstrap() {
     logger: createLogger("panel-view"),
     onRoundClick: (roundId) => {
       scrollManager.scrollToRound(roundId);
+      // 点击轮次后按需重解析（带冷却），避免每次点击都触发全量解析。
+      requestSectionRetryIfNeeded(roundId);
     },
     onRoundSectionClick: (roundId) => {
       openSectionViewByRound(roundId);
@@ -298,9 +316,13 @@ async function bootstrap() {
 
   const scrollManager = new ScrollManager({
     logger: createLogger("scroll-manager"),
+    adapter,
     offsetPx: CONFIG.SCROLL_TOP_OFFSET_PX,
     onActiveRoundChange: (roundId) => {
       panelView.setActiveRound(roundId);
+      // 兜底：某些页面在滚动到旧轮次时才把正文节点挂载到 DOM（文档对象模型）。
+      // 若当前轮次还没有章节，触发一次防抖重解析，避免“可见但未识别”。
+      requestSectionRetryIfNeeded(roundId);
     },
     onActiveSectionChange: (sectionId) => {
       panelView.setActiveSection(sectionId);
@@ -315,22 +337,32 @@ async function bootstrap() {
   const parserLogger = createLogger("conversation-parser");
 
   const parseAndRender = () => {
-    const messageElements = adapter.getOrderedMessageElements(container);
-    const rounds = buildConversationRounds(messageElements, {
-      adapter,
+    const messages = collectUnifiedMessages(adapter, container, {
+      logger: parserLogger,
+      document
+    });
+
+    const rounds = buildConversationRounds(messages, {
       roundIdManager,
       logger: parserLogger
     });
 
     const roundsChanged = !areRoundListsEquivalent(latestRounds, rounds);
     if (!roundsChanged) {
-      logger.debug("轮次数据未变化，跳过重渲染。");
+      logger.debug("轮次数据未变化，跳过重渲染。", {
+        platform: adapter.platform
+      });
       scrollManager.detectByView("rounds-unchanged-skip-render");
       return;
     }
 
     latestRounds = rounds;
     latestRoundMap = new Map(rounds.map((round) => [round.id, round]));
+    for (const roundId of sectionRetryMemo.keys()) {
+      if (!latestRoundMap.has(roundId)) {
+        sectionRetryMemo.delete(roundId);
+      }
+    }
 
     panelView.setRounds(rounds);
     scrollManager.setRounds(rounds);
@@ -344,10 +376,10 @@ async function bootstrap() {
 
     const targetRound = latestRoundMap.get(sectionState.roundId);
     const isValidSectionRound = Boolean(
-      targetRound &&
-      targetRound.hasSections === true &&
-      targetRound.sectionSourceEl instanceof HTMLElement &&
-      targetRound.sectionSourceEl.isConnected
+      targetRound
+      && targetRound.hasSections === true
+      && targetRound.sectionSourceEl instanceof HTMLElement
+      && targetRound.sectionSourceEl.isConnected
     );
 
     if (!isValidSectionRound) {
@@ -368,39 +400,46 @@ async function bootstrap() {
   };
 
   const debouncedRefresh = debounce(() => {
-    logger.debug("触发目录刷新（防抖后执行）。");
+    logger.debug("触发目录刷新（防抖后执行）。", { platform: adapter.platform });
     parseAndRender();
   }, CONFIG.REFRESH_DEBOUNCE_MS);
 
   parseAndRender();
 
-  const contentObserver = new MutationObserver((mutations) => {
-    logger.debug("检测到页面内容变化。", { mutationCount: mutations.length });
-    debouncedRefresh();
-  });
-
-  contentObserver.observe(container, {
-    childList: true,
-    subtree: true,
-    characterData: true
-  });
+  const disconnectContentObserver = adapter.observeChanges(
+    container,
+    (mutations) => {
+      if (!shouldRefreshByMutations(mutations)) {
+        return;
+      }
+      logger.debug("检测到页面内容变化。", {
+        mutationCount: mutations.length,
+        platform: adapter.platform
+      });
+      debouncedRefresh();
+    },
+    { document }
+  );
 
   runtime.destroy = (reason = "manual") => {
     if (runtime.destroyed) {
       return;
     }
     runtime.destroyed = true;
-    contentObserver.disconnect();
+    if (typeof disconnectContentObserver === "function") {
+      disconnectContentObserver();
+    }
     scrollManager.destroy();
     panelView.destroy();
     if (window[RUNTIME_INSTANCE_KEY] === runtime) {
       delete window[RUNTIME_INSTANCE_KEY];
     }
-    logger.info("历史对话导航实例已销毁。", { reason });
+    logger.info("历史对话导航实例已销毁。", { reason, platform: adapter.platform });
   };
 
   logger.info("历史对话导航已完成初始化。", {
-    refreshDebounceMs: CONFIG.REFRESH_DEBOUNCE_MS
+    refreshDebounceMs: CONFIG.REFRESH_DEBOUNCE_MS,
+    platform: adapter.platform
   });
 }
 

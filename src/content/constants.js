@@ -7,11 +7,12 @@ export const MINOR_TICK_STEP = 5;
 export const MAJOR_TICK_STEP = 5;
 export const SECTION_BUTTON_TEXT = "章节";
 export const SECTION_EMPTY_TEXT = "未检测到可导航章节";
+// 章节导航最小显示数量：少于 2 个章节时不显示按钮。
 export const SECTION_MIN_COUNT = 2;
-export const SECTION_MAX_COUNT = 8;
-export const SECTION_GROUP_MAX_COUNT = 8;
-export const SECTION_GROUP_CHILD_MAX_COUNT = 6;
-export const SECTION_MIN_BODY_LENGTH = 80;
+// 章节导航最大数量：最多保留 50 个章节。
+export const SECTION_MAX_COUNT = 50;
+// 章节选择器（selector，选择器）：仅允许从 h1/h2/h3 提取章节。
+export const SECTION_HEADING_SELECTOR = "h1, h2, h3";
 
 export const STORAGE_KEYS = {
   PANEL_COLLAPSED: "ccn_panel_collapsed",

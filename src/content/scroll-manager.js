@@ -55,6 +55,7 @@ function isValidAnchor(element) {
 export class ScrollManager {
   constructor(options) {
     this.logger = options.logger;
+    this.adapter = options.adapter || null;
     this.onActiveRoundChange = options.onActiveRoundChange;
     this.onActiveSectionChange = options.onActiveSectionChange;
 
@@ -364,7 +365,21 @@ export class ScrollManager {
       return null;
     }
 
-    const container = findNearestScrollContainer(anchor);
+    let container = null;
+    if (this.adapter && typeof this.adapter.getScrollContainer === "function") {
+      try {
+        container = this.adapter.getScrollContainer(anchor, {
+          viewMode: this.viewMode
+        });
+      } catch (error) {
+        this.logger.warn("adapter.getScrollContainer 执行失败，已回退默认逻辑。", error);
+      }
+    }
+
+    if (!(container instanceof HTMLElement)) {
+      container = findNearestScrollContainer(anchor);
+    }
+
     if (container) {
       const key = `${container.tagName}|${container.className || ""}`;
       if (this.lastLoggedContainerKey !== key) {
@@ -407,6 +422,22 @@ export class ScrollManager {
   }
 
   _scrollToAnchor(anchor) {
+    if (this.adapter && typeof this.adapter.scrollToMessage === "function") {
+      try {
+        const targetTop = this.adapter.scrollToMessage(anchor, {
+          offsetPx: this.offsetPx,
+          container: this.scrollContainer,
+          viewMode: this.viewMode
+        });
+
+        if (Number.isFinite(targetTop)) {
+          return Math.max(0, targetTop);
+        }
+      } catch (error) {
+        this.logger.warn("adapter.scrollToMessage 执行失败，已回退默认滚动。", error);
+      }
+    }
+
     if (this.scrollContainer) {
       const containerRect = this.scrollContainer.getBoundingClientRect();
       const anchorRect = anchor.getBoundingClientRect();
