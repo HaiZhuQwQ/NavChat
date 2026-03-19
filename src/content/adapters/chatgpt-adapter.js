@@ -183,6 +183,8 @@ export class ChatGPTAdapter extends BaseAdapter {
     this.selectorLogMemo = new Set();
     this.emptyHintLogged = false;
     this.emptyMessageScanCount = 0;
+    // 文本提取缓存：避免同一消息节点在多次刷新中重复执行昂贵的 clone/query。
+    this.messageTextCache = new WeakMap();
   }
 
   detect(context = {}) {
@@ -532,6 +534,12 @@ export class ChatGPTAdapter extends BaseAdapter {
       return "";
     }
 
+    const cacheKey = this._buildMessageTextCacheKey(element);
+    const cached = this.messageTextCache.get(element);
+    if (cached && cached.key === cacheKey) {
+      return cached.text;
+    }
+
     const rootResult = this.selectAllWithFallback(element, "messageTextRoots", {
       silent: true,
       filterElement: (el) => Boolean(el)
@@ -567,7 +575,12 @@ export class ChatGPTAdapter extends BaseAdapter {
       }
     }
 
-    return bestText;
+    const resolved = String(bestText || "");
+    this.messageTextCache.set(element, {
+      key: cacheKey,
+      text: resolved
+    });
+    return resolved;
   }
 
   getAssistantState(element, messageText, context = {}) {
@@ -949,6 +962,22 @@ export class ChatGPTAdapter extends BaseAdapter {
     }
 
     return result;
+  }
+
+  _buildMessageTextCacheKey(element) {
+    if (!(element instanceof HTMLElement)) {
+      return "invalid";
+    }
+
+    // 使用轻量快照做缓存键：避免每次都走深度 DOM（文档对象模型）清洗。
+    // 说明：若文本长度相同但内容变化，首尾片段也能捕获大部分更新。
+    const rawText = normalizeText(element.textContent || "");
+    const head = rawText.slice(0, 24);
+    const tail = rawText.slice(-24);
+    const childCount = element.childElementCount;
+    const messageId = normalizeText(element.getAttribute("data-message-id"));
+    const testId = normalizeText(element.getAttribute("data-testid"));
+    return `${rawText.length}|${head}|${tail}|${childCount}|${messageId}|${testId}`;
   }
 }
 

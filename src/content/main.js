@@ -11,6 +11,13 @@ import { ScrollManager } from "./scroll-manager.js";
 import { loadPanelCollapsed, savePanelCollapsed } from "./state-store.js";
 
 const RUNTIME_INSTANCE_KEY = "__CCN_RUNTIME_INSTANCE__";
+const CONVERSATION_MUTATION_SELECTOR = [
+  "[data-message-author-role]",
+  "[data-testid*='conversation-turn']",
+  "[data-message-id]",
+  "[data-testid='conversation-turn-content']",
+  ".markdown"
+].join(", ");
 
 function debounce(fn, delayMs) {
   let timer = null;
@@ -18,6 +25,70 @@ function debounce(fn, delayMs) {
     clearTimeout(timer);
     timer = setTimeout(() => fn(...args), delayMs);
   };
+}
+
+function toElement(node) {
+  if (node instanceof HTMLElement) {
+    return node;
+  }
+  if (node instanceof Text) {
+    return node.parentElement;
+  }
+  return null;
+}
+
+function isInsideNavChatPanel(element) {
+  return element instanceof HTMLElement && Boolean(element.closest("#ccn-root"));
+}
+
+function hasConversationMarker(element) {
+  if (!(element instanceof HTMLElement)) {
+    return false;
+  }
+  if (isInsideNavChatPanel(element)) {
+    return false;
+  }
+
+  if (element.matches(CONVERSATION_MUTATION_SELECTOR)) {
+    return true;
+  }
+  if (element.closest(CONVERSATION_MUTATION_SELECTOR)) {
+    return true;
+  }
+  if (element.childElementCount > 0 && element.querySelector(CONVERSATION_MUTATION_SELECTOR)) {
+    return true;
+  }
+  return false;
+}
+
+function shouldRefreshByMutations(mutations) {
+  if (!Array.isArray(mutations) || mutations.length === 0) {
+    return false;
+  }
+
+  for (const mutation of mutations) {
+    if (!mutation) {
+      continue;
+    }
+
+    const targetElement = toElement(mutation.target);
+    if (hasConversationMarker(targetElement)) {
+      return true;
+    }
+
+    if (mutation.type !== "childList") {
+      continue;
+    }
+
+    const changedNodes = [...mutation.addedNodes, ...mutation.removedNodes];
+    for (const node of changedNodes) {
+      if (hasConversationMarker(toElement(node))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 function areSectionListsEquivalent(prevSections, nextSections) {
@@ -30,6 +101,7 @@ function areSectionListsEquivalent(prevSections, nextSections) {
   for (let i = 0; i < prev.length; i += 1) {
     const left = prev[i];
     const right = next[i];
+    // 仅比较当前渲染与滚动链路实际消费的字段，避免无效字段导致重复重渲染。
     if (
       left?.id !== right?.id
       || left?.title !== right?.title
@@ -37,8 +109,6 @@ function areSectionListsEquivalent(prevSections, nextSections) {
       || left?.index !== right?.index
       || left?.groupId !== right?.groupId
       || left?.itemType !== right?.itemType
-      || left?.sourceType !== right?.sourceType
-      || left?.score !== right?.score
       || left?.element !== right?.element
     ) {
       return false;
@@ -63,8 +133,6 @@ function areSectionGroupListsEquivalent(prevGroups, nextGroups) {
       || left?.title !== right?.title
       || left?.level !== right?.level
       || left?.index !== right?.index
-      || left?.sourceType !== right?.sourceType
-      || left?.score !== right?.score
       || left?.element !== right?.element
       || areSectionListsEquivalent(left?.children, right?.children) === false
     ) {
@@ -179,6 +247,28 @@ async function bootstrap() {
   let latestRounds = [];
   let latestRoundMap = new Map();
   let activeRoundBeforeSectionView = null;
+  const sectionRetryMemo = new Map();
+  const SECTION_RETRY_COOLDOWN_MS = 2500;
+
+  const requestSectionRetryIfNeeded = (roundId) => {
+    if (!roundId) {
+      return;
+    }
+
+    const round = latestRoundMap.get(roundId);
+    if (!round || round.hasSections === true) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastRetryAt = sectionRetryMemo.get(roundId) || 0;
+    if (now - lastRetryAt < SECTION_RETRY_COOLDOWN_MS) {
+      return;
+    }
+
+    sectionRetryMemo.set(roundId, now);
+    debouncedRefresh();
+  };
 
   // 打开二级章节视图：先记录当前轮次高亮，再切换到章节模式。
   const openSectionViewByRound = (roundId) => {
@@ -208,8 +298,8 @@ async function bootstrap() {
     logger: createLogger("panel-view"),
     onRoundClick: (roundId) => {
       scrollManager.scrollToRound(roundId);
-      // 点击轮次后主动触发一次重解析，覆盖“旧轮次内容后挂载但无 mutation”场景。
-      debouncedRefresh();
+      // 点击轮次后按需重解析（带冷却），避免每次点击都触发全量解析。
+      requestSectionRetryIfNeeded(roundId);
     },
     onRoundSectionClick: (roundId) => {
       openSectionViewByRound(roundId);
@@ -232,10 +322,7 @@ async function bootstrap() {
       panelView.setActiveRound(roundId);
       // 兜底：某些页面在滚动到旧轮次时才把正文节点挂载到 DOM（文档对象模型）。
       // 若当前轮次还没有章节，触发一次防抖重解析，避免“可见但未识别”。
-      const activeRound = roundId ? latestRoundMap.get(roundId) : null;
-      if (activeRound && activeRound.hasSections !== true) {
-        debouncedRefresh();
-      }
+      requestSectionRetryIfNeeded(roundId);
     },
     onActiveSectionChange: (sectionId) => {
       panelView.setActiveSection(sectionId);
@@ -271,6 +358,11 @@ async function bootstrap() {
 
     latestRounds = rounds;
     latestRoundMap = new Map(rounds.map((round) => [round.id, round]));
+    for (const roundId of sectionRetryMemo.keys()) {
+      if (!latestRoundMap.has(roundId)) {
+        sectionRetryMemo.delete(roundId);
+      }
+    }
 
     panelView.setRounds(rounds);
     scrollManager.setRounds(rounds);
@@ -317,6 +409,9 @@ async function bootstrap() {
   const disconnectContentObserver = adapter.observeChanges(
     container,
     (mutations) => {
+      if (!shouldRefreshByMutations(mutations)) {
+        return;
+      }
       logger.debug("检测到页面内容变化。", {
         mutationCount: mutations.length,
         platform: adapter.platform

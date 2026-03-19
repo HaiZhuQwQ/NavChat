@@ -27,6 +27,77 @@ const LOW_INFO_PREFIXES = [
   "以下是"
 ];
 
+// 章节提取缓存：避免在频繁刷新时重复解析历史轮次，降低大对话卡顿。
+const SECTION_EXTRACTION_CACHE = new Map();
+const ELEMENT_ID_CACHE = new WeakMap();
+let ELEMENT_ID_SEQ = 1;
+
+function getElementStableId(element) {
+  if (!(element instanceof HTMLElement)) {
+    return "0";
+  }
+
+  const existed = ELEMENT_ID_CACHE.get(element);
+  if (existed) {
+    return String(existed);
+  }
+
+  const nextId = ELEMENT_ID_SEQ;
+  ELEMENT_ID_SEQ += 1;
+  ELEMENT_ID_CACHE.set(element, nextId);
+  return String(nextId);
+}
+
+function buildSectionCacheKey(assistantMessages, options = {}) {
+  const list = Array.isArray(assistantMessages) ? assistantMessages : [];
+  const parts = [
+    `min:${options.minCount || SECTION_MIN_COUNT}`,
+    `max:${options.maxCount || SECTION_MAX_COUNT}`,
+    `count:${list.length}`
+  ];
+
+  for (const message of list) {
+    const id = String(message?.id || "");
+    const textLen = normalizeInlineText(message?.text || "").length;
+    const state = [
+      message?.state?.isStreaming ? "1" : "0",
+      message?.state?.isError ? "1" : "0",
+      message?.state?.isEmpty ? "1" : "0"
+    ].join("");
+    const elementId = getElementStableId(message?.element || null);
+    parts.push(`${id}:${state}:${textLen}:${elementId}`);
+  }
+
+  return parts.join("|");
+}
+
+function getCachedSectionResult(roundId, cacheKey) {
+  const cached = SECTION_EXTRACTION_CACHE.get(roundId);
+  if (!cached) {
+    return null;
+  }
+  if (cached.cacheKey !== cacheKey) {
+    return null;
+  }
+  return cached.result || null;
+}
+
+function setCachedSectionResult(roundId, cacheKey, result) {
+  SECTION_EXTRACTION_CACHE.set(roundId, {
+    cacheKey,
+    result
+  });
+}
+
+function pruneSectionCache(validRoundIds) {
+  const validSet = validRoundIds instanceof Set ? validRoundIds : new Set(validRoundIds || []);
+  for (const key of SECTION_EXTRACTION_CACHE.keys()) {
+    if (!validSet.has(key)) {
+      SECTION_EXTRACTION_CACHE.delete(key);
+    }
+  }
+}
+
 function normalizeInlineText(text) {
   return String(text || "")
     .replace(/\s+/g, " ")
@@ -589,13 +660,22 @@ export function buildConversationRounds(unifiedMessages, options) {
     let sections = [];
     let hasSections = false;
     if (shouldBuildSections) {
-      const sectionCandidate = pickBestSectionResultForRound({
-        roundId: id,
-        assistantMessages: round.assistantMessages,
-        logger,
+      const cacheKey = buildSectionCacheKey(round.assistantMessages, {
         minCount: SECTION_MIN_COUNT,
         maxCount: SECTION_MAX_COUNT
       });
+
+      let sectionCandidate = getCachedSectionResult(id, cacheKey);
+      if (!sectionCandidate) {
+        sectionCandidate = pickBestSectionResultForRound({
+          roundId: id,
+          assistantMessages: round.assistantMessages,
+          logger,
+          minCount: SECTION_MIN_COUNT,
+          maxCount: SECTION_MAX_COUNT
+        });
+        setCachedSectionResult(id, cacheKey, sectionCandidate);
+      }
 
       const sectionResult = sectionCandidate?.sectionResult || null;
       if (sectionResult) {
@@ -626,11 +706,14 @@ export function buildConversationRounds(unifiedMessages, options) {
     };
   });
 
-  logger?.info("轮次解析完成。", {
+  // 高频路径降级为 debug（调试级别），避免在 info（信息级别）下频繁刷日志影响性能与排查体验。
+  logger?.debug("轮次解析完成。", {
     messageCount: normalized.length,
     roundCount: finalized.length,
     sectionRoundCount: finalized.filter((round) => round.hasSections === true).length
   });
+
+  pruneSectionCache(new Set(finalized.map((item) => item.id)));
 
   return finalized;
 }
