@@ -457,6 +457,7 @@ export function buildConversationRounds(messageElements, options) {
 
     // 章节导航仅在“已完成回答”触发，避免流式阶段反复抖动。
     let sectionSourceEl = null;
+    let sectionGroups = [];
     let sections = [];
     let hasSections = false;
     if (status === ROUND_STATUS.COMPLETE && firstAssistantMessage) {
@@ -473,6 +474,7 @@ export function buildConversationRounds(messageElements, options) {
       });
 
       sectionSourceEl = sectionResult.sectionSourceEl;
+      sectionGroups = sectionResult.sectionGroups;
       sections = sectionResult.sections;
       hasSections = sectionResult.canShowButton === true && sections.length >= SECTION_MIN_COUNT;
     }
@@ -490,6 +492,7 @@ export function buildConversationRounds(messageElements, options) {
       searchText: `${title} ${resolvedAssistantPreview} ${round.userText} ${assistantText}`.trim(),
       assistantMessages: round.assistantMessages,
       sectionSourceEl,
+      sectionGroups,
       sections,
       hasSections
     };

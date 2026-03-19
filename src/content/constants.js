@@ -9,6 +9,8 @@ export const SECTION_BUTTON_TEXT = "章节";
 export const SECTION_EMPTY_TEXT = "未检测到可导航章节";
 export const SECTION_MIN_COUNT = 2;
 export const SECTION_MAX_COUNT = 8;
+export const SECTION_GROUP_MAX_COUNT = 8;
+export const SECTION_GROUP_CHILD_MAX_COUNT = 6;
 export const SECTION_MIN_BODY_LENGTH = 80;
 
 export const STORAGE_KEYS = {

@@ -44,7 +44,36 @@ function areSectionListsEquivalent(prevSections, nextSections) {
       || left?.title !== right?.title
       || left?.level !== right?.level
       || left?.index !== right?.index
+      || left?.groupId !== right?.groupId
+      || left?.itemType !== right?.itemType
+      || left?.sourceType !== right?.sourceType
       || left?.element !== right?.element
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function areSectionGroupListsEquivalent(prevGroups, nextGroups) {
+  const prev = Array.isArray(prevGroups) ? prevGroups : [];
+  const next = Array.isArray(nextGroups) ? nextGroups : [];
+  if (prev.length !== next.length) {
+    return false;
+  }
+
+  for (let i = 0; i < prev.length; i += 1) {
+    const left = prev[i];
+    const right = next[i];
+    if (
+      left?.id !== right?.id
+      || left?.title !== right?.title
+      || left?.level !== right?.level
+      || left?.index !== right?.index
+      || left?.sourceType !== right?.sourceType
+      || left?.element !== right?.element
+      || areSectionListsEquivalent(left?.children, right?.children) === false
     ) {
       return false;
     }
@@ -78,6 +107,7 @@ function areRoundListsEquivalent(prevRounds, nextRounds) {
       || left?.hasSections !== right?.hasSections
       || left?.userAnchorEl !== right?.userAnchorEl
       || left?.sectionSourceEl !== right?.sectionSourceEl
+      || areSectionGroupListsEquivalent(left?.sectionGroups, right?.sectionGroups) === false
       || sameAssistantAnchors === false
       || areSectionListsEquivalent(left?.sections, right?.sections) === false
     ) {

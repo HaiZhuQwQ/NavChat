@@ -1,9 +1,11 @@
 /**
  * 本文件负责“回答内章节提取（section extraction）”。
- * 目标：从单条 assistant（助手）回答里提取可导航的小标题，并输出稳定、可滚动定位的章节列表。
+ * 目标：优先基于 Markdown/HTML 结构提取章节，再在结构不足时用文本规则兜底。
  */
 
 import {
+  SECTION_GROUP_CHILD_MAX_COUNT,
+  SECTION_GROUP_MAX_COUNT,
   SECTION_MAX_COUNT,
   SECTION_MIN_BODY_LENGTH,
   SECTION_MIN_COUNT
@@ -23,8 +25,7 @@ function normalizeTitle(text) {
   return normalizeInlineText(text)
     .replace(/^#{1,6}\s+/, "")
     .replace(/^\*\*([^*]+)\*\*$/, "$1")
-    .replace(/^[\-\*\u2022\s]+/, "")
-    .replace(/^(?:第\s*\d+\s*[章节部分步]|\d+\s*[.)、．]|[一二三四五六七八九十百千]+\s*[、.．])\s*/, "")
+    .replace(/^[\-*\u2022\s]+/, "")
     .replace(/[：:。.!！?？\-\s]+$/, "")
     .trim();
 }
@@ -90,11 +91,11 @@ function isLikelyCodeText(text) {
 
   const codeLikeLineCount = lines.filter((line) => {
     return (
-      /^\s*(const|let|var|function|class|import|export|if|for|while|return|async|await|try|catch)\b/.test(line) ||
-      /=>/.test(line) ||
-      /[{};<>]/.test(line) ||
-      /\bconsole\./.test(line) ||
-      /^\s{2,}\S/.test(line)
+      /^\s*(const|let|var|function|class|import|export|if|for|while|return|async|await|try|catch)\b/.test(line)
+      || /=>/.test(line)
+      || /[{};<>]/.test(line)
+      || /\bconsole\./.test(line)
+      || /^\s{2,}\S/.test(line)
     );
   }).length;
 
@@ -157,10 +158,10 @@ function resolveSectionSourceElement(assistantElement) {
   }
 
   const assistantRoot =
-    assistantElement.closest("[data-message-author-role='assistant']") ||
-    assistantElement.closest("[data-testid*='conversation-turn-assistant']") ||
-    assistantElement.closest("article[data-testid*='conversation-turn']") ||
-    assistantElement;
+    assistantElement.closest("[data-message-author-role='assistant']")
+    || assistantElement.closest("[data-testid*='conversation-turn-assistant']")
+    || assistantElement.closest("article[data-testid*='conversation-turn']")
+    || assistantElement;
 
   const highPriorityCandidates = [
     assistantRoot.querySelector("[data-testid='conversation-turn-content']"),
@@ -181,143 +182,6 @@ function resolveSectionSourceElement(assistantElement) {
   }
 
   return assistantRoot;
-}
-
-function getElementLevel(tagName) {
-  const match = String(tagName || "").toLowerCase().match(/^h([1-6])$/);
-  if (!match) {
-    return 3;
-  }
-  return Number.parseInt(match[1], 10);
-}
-
-function collectNativeHeadingCandidates(sourceEl) {
-  const headings = Array.from(sourceEl.querySelectorAll("h1, h2, h3, h4, h5, h6"));
-  return headings.map((element) => ({
-    element,
-    title: normalizeTitle(element.textContent || ""),
-    level: getElementLevel(element.tagName),
-    priority: 1
-  }));
-}
-
-function collectNumberedHeadingCandidates(sourceEl) {
-  const blocks = Array.from(sourceEl.querySelectorAll("p, li, div, blockquote"));
-  const pattern = /^(?:第\s*\d+\s*[章节部分步]|\d{1,2}\s*[.)、．]|[一二三四五六七八九十百千]+\s*[、.．]|(?:步骤|阶段)\s*\d+)\s*[:：\-）)]?\s*(.+)$/;
-
-  const result = [];
-  for (const element of blocks) {
-    if (element.querySelector("h1, h2, h3, h4, h5, h6")) {
-      continue;
-    }
-
-    const rawText = normalizeInlineText(element.textContent || "");
-    const match = rawText.match(pattern);
-    if (!match) {
-      continue;
-    }
-
-    result.push({
-      element,
-      title: normalizeTitle(match[1] || rawText),
-      level: 3,
-      priority: 2
-    });
-  }
-
-  return result;
-}
-
-function collectBoldHeadingCandidates(sourceEl) {
-  const boldNodes = Array.from(
-    sourceEl.querySelectorAll("p > strong:first-child, p > b:first-child, li > strong:first-child, li > b:first-child, div > strong:first-child, div > b:first-child")
-  );
-  const result = [];
-
-  for (const node of boldNodes) {
-    const parent = node.parentElement;
-    if (!parent) {
-      continue;
-    }
-
-    const strongText = normalizeTitle(node.textContent || "");
-    if (!strongText) {
-      continue;
-    }
-
-    const parentText = normalizeInlineText(parent.textContent || "");
-    if (!parentText.startsWith(strongText)) {
-      continue;
-    }
-
-    result.push({
-      element: parent,
-      title: strongText,
-      level: 4,
-      priority: 3
-    });
-  }
-
-  return result;
-}
-
-function collectStageSubtitleCandidates(sourceEl) {
-  const blocks = Array.from(sourceEl.querySelectorAll("p, li, div, blockquote"));
-  const result = [];
-
-  for (const element of blocks) {
-    if (element.querySelector("h1, h2, h3, h4, h5, h6, strong, b")) {
-      continue;
-    }
-
-    const text = normalizeInlineText(element.textContent || "");
-    if (!text || textLength(text) < 4 || textLength(text) > 34) {
-      continue;
-    }
-
-    const looksLikeSubtitle =
-      /[:：]$/.test(text) ||
-      /^(?:准备阶段|执行阶段|收尾阶段|背景|目标|步骤|总结|结论|注意事项)/.test(text);
-
-    if (!looksLikeSubtitle) {
-      continue;
-    }
-
-    result.push({
-      element,
-      title: normalizeTitle(text),
-      level: 4,
-      priority: 4
-    });
-  }
-
-  return result;
-}
-
-function chooseCandidatePool(nativeCandidates, numberedCandidates, boldCandidates, stageCandidates) {
-  if (nativeCandidates.length >= SECTION_MIN_COUNT) {
-    return nativeCandidates;
-  }
-
-  return [...nativeCandidates, ...numberedCandidates, ...boldCandidates, ...stageCandidates];
-}
-
-function sortCandidatesByDom(candidates) {
-  return [...candidates].sort((a, b) => {
-    if (a.element === b.element) {
-      return a.priority - b.priority;
-    }
-
-    const relation = a.element.compareDocumentPosition(b.element);
-    if (relation & Node.DOCUMENT_POSITION_FOLLOWING) {
-      return -1;
-    }
-    if (relation & Node.DOCUMENT_POSITION_PRECEDING) {
-      return 1;
-    }
-
-    return a.priority - b.priority;
-  });
 }
 
 function calcOverlapRatio(a, b) {
@@ -355,7 +219,213 @@ function isHighlySimilarTitle(a, b) {
   return calcOverlapRatio(left, right) >= 0.82 && Math.abs(left.length - right.length) <= 5;
 }
 
-function dedupeAndFilterCandidates(candidates) {
+function sortCandidatesByDom(candidates) {
+  return [...candidates].sort((a, b) => {
+    if (a.element === b.element) {
+      return a.priority - b.priority;
+    }
+
+    const relation = a.element.compareDocumentPosition(b.element);
+    if (relation & Node.DOCUMENT_POSITION_FOLLOWING) {
+      return -1;
+    }
+    if (relation & Node.DOCUMENT_POSITION_PRECEDING) {
+      return 1;
+    }
+
+    return a.priority - b.priority;
+  });
+}
+
+function buildCandidate(element, title, options = {}) {
+  return {
+    element,
+    title,
+    level: options.level || 3,
+    sourceType: options.sourceType || "pattern",
+    semanticType: options.semanticType || "neutral",
+    priority: options.priority || 99,
+    rawText: options.rawText || "",
+    neutralHint: options.neutralHint || ""
+  };
+}
+
+function getHeadingLevel(tagName) {
+  const match = String(tagName || "").toLowerCase().match(/^h([1-6])$/);
+  if (!match) {
+    return null;
+  }
+  return Number.parseInt(match[1], 10);
+}
+
+/**
+ * 结构优先：先识别真实 Markdown/HTML 标题节点。
+ */
+function collectHeadingCandidates(sourceEl, minCount) {
+  const all = Array.from(sourceEl.querySelectorAll("h1, h2, h3, h4, h5, h6"))
+    .map((element) => {
+      const level = getHeadingLevel(element.tagName);
+      if (!level) {
+        return null;
+      }
+
+      if (level <= 2) {
+        return buildCandidate(element, element.textContent || "", {
+          level,
+          sourceType: "heading",
+          semanticType: "main",
+          priority: 10 + level
+        });
+      }
+
+      if (level <= 4) {
+        return buildCandidate(element, element.textContent || "", {
+          level,
+          sourceType: "heading",
+          semanticType: "sub",
+          priority: 10 + level
+        });
+      }
+
+      return buildCandidate(element, element.textContent || "", {
+        level,
+        sourceType: "heading",
+        semanticType: "ignored",
+        priority: 10 + level
+      });
+    })
+    .filter(Boolean);
+
+  const primary = all.filter((item) => item.level <= 4);
+  const deep = all.filter((item) => item.level >= 5);
+
+  // h5/h6 默认不入导航；仅在结构不足且数量可控时，作为 child 兜底。
+  if (primary.length < minCount && deep.length > 0 && deep.length <= 2) {
+    const deepAsChild = deep.map((item) => ({
+      ...item,
+      semanticType: "sub"
+    }));
+    return [...primary, ...deepAsChild];
+  }
+
+  return primary;
+}
+
+function collectPatternCandidates(sourceEl) {
+  const result = [];
+  const blocks = Array.from(sourceEl.querySelectorAll("p, li, div, blockquote"));
+
+  const mainPatterns = [
+    /^(?:[一二三四五六七八九十百千]+\s*[、.．])\s*(.+)$/,
+    /^(?:\d{1,2}\s*[.)、．])\s*(.+)$/,
+    /^(?:第\s*\d+\s*(?:章|节|部分|阶段|点|步)[：:）)]?\s*)(.+)$/
+  ];
+
+  const subPatterns = [
+    /^(?:情况\s*[A-Za-z0-9一二三四五六七八九十]+[：:）)]?\s*)(.+)$/,
+    /^(?:(?:步骤|方法)\s*\d+[：:）)]?\s*)(.+)$/,
+    /^(?:第\s*[一二三四五六七八九十\d]+\s*步[：:）)]?\s*)(.+)$/,
+    /^(?:step\s*\d+[：:）)]?\s*)(.+)$/i
+  ];
+
+  for (const element of blocks) {
+    if (element.querySelector("h1, h2, h3, h4, h5, h6")) {
+      continue;
+    }
+
+    const rawText = normalizeInlineText(element.textContent || "");
+    if (!rawText) {
+      continue;
+    }
+
+    let matched = false;
+    for (const pattern of mainPatterns) {
+      const match = rawText.match(pattern);
+      if (match) {
+        result.push(buildCandidate(element, match[1] || rawText, {
+          level: 3,
+          sourceType: "pattern",
+          semanticType: "main",
+          priority: 40,
+          rawText
+        }));
+        matched = true;
+        break;
+      }
+    }
+    if (matched) {
+      continue;
+    }
+
+    for (const pattern of subPatterns) {
+      const match = rawText.match(pattern);
+      if (match) {
+        result.push(buildCandidate(element, match[1] || rawText, {
+          level: 4,
+          sourceType: "pattern",
+          semanticType: "sub",
+          priority: 50,
+          rawText
+        }));
+        matched = true;
+        break;
+      }
+    }
+    if (matched) {
+      continue;
+    }
+
+    const looksLikeParagraphTitle =
+      textLength(rawText) >= 3
+      && textLength(rawText) <= 30
+      && /[:：]$/.test(rawText);
+
+    if (looksLikeParagraphTitle) {
+      result.push(buildCandidate(element, rawText, {
+        level: 4,
+        sourceType: "pattern",
+        semanticType: "neutral",
+        priority: 65,
+        rawText,
+        neutralHint: "colon"
+      }));
+    }
+  }
+
+  const boldNodes = Array.from(
+    sourceEl.querySelectorAll("p > strong:first-child, p > b:first-child, li > strong:first-child, li > b:first-child, div > strong:first-child, div > b:first-child")
+  );
+
+  for (const node of boldNodes) {
+    const parent = node.parentElement;
+    if (!parent || parent.querySelector("h1, h2, h3, h4, h5, h6")) {
+      continue;
+    }
+
+    const strongText = normalizeTitle(node.textContent || "");
+    if (!strongText) {
+      continue;
+    }
+
+    const parentText = normalizeInlineText(parent.textContent || "");
+    if (!parentText.startsWith(strongText)) {
+      continue;
+    }
+
+    result.push(buildCandidate(parent, strongText, {
+      level: 4,
+      sourceType: "pattern",
+      semanticType: "neutral",
+      priority: 60,
+      rawText: parentText,
+      neutralHint: "bold"
+    }));
+  }
+
+  return result;
+}
+
+function cleanupCandidates(candidates) {
   const filtered = [];
   const seenNormalized = new Set();
 
@@ -365,16 +435,16 @@ function dedupeAndFilterCandidates(candidates) {
       continue;
     }
 
+    if (candidate.semanticType === "ignored") {
+      continue;
+    }
+
     if (!isLocatableElement(candidate.element)) {
       continue;
     }
 
     const normalized = normalizeForCompare(title);
-    if (!normalized) {
-      continue;
-    }
-
-    if (seenNormalized.has(normalized)) {
+    if (!normalized || seenNormalized.has(normalized)) {
       continue;
     }
 
@@ -393,9 +463,186 @@ function dedupeAndFilterCandidates(candidates) {
   return filtered;
 }
 
+function chooseCandidates(sectionSourceEl, minCount) {
+  const structured = cleanupCandidates(collectHeadingCandidates(sectionSourceEl, minCount));
+  if (structured.length >= minCount) {
+    return structured;
+  }
+
+  const pattern = cleanupCandidates(collectPatternCandidates(sectionSourceEl));
+  if (structured.length === 0) {
+    return pattern;
+  }
+
+  // 文本规则仅兜底补充，不能覆盖结构层级：通过优先级保证 heading 先保留。
+  return cleanupCandidates([...structured, ...pattern]);
+}
+
+function isAcceptableNeutralCandidate(candidate) {
+  const title = normalizeTitle(candidate?.title || "");
+  if (!title) {
+    return false;
+  }
+
+  const len = textLength(title);
+  if (len < 3 || len > 24) {
+    return false;
+  }
+
+  if (/[。.!！？?]$/.test(title)) {
+    return false;
+  }
+
+  const punctCount = (title.match(/[，,。.!！？?；;、]/g) || []).length;
+  if (punctCount / Math.max(len, 1) > 0.18) {
+    return false;
+  }
+
+  if (candidate?.neutralHint === "bold") {
+    return true;
+  }
+
+  const triggerText = normalizeInlineText(candidate?.rawText || title);
+  return /[:：]$/.test(triggerText) || /^(?:\d+[.)、．]|[一二三四五六七八九十百千]+[、.．]|(?:步骤|方法|情况)\s*[A-Za-z0-9一二三四五六七八九十]+)/.test(triggerText);
+}
+
+function createGroup(roundId, index, candidate) {
+  return {
+    id: `ccn-group-${roundId}-${index}`,
+    title: candidate.title,
+    level: candidate.level,
+    element: candidate.element,
+    index,
+    sourceType: candidate.sourceType,
+    children: []
+  };
+}
+
+function createChildItem(roundId, group, localIndex, candidate) {
+  return {
+    id: `ccn-section-${roundId}-g${group.index}-c${localIndex}`,
+    title: candidate.title,
+    element: candidate.element,
+    index: localIndex,
+    groupId: group.id,
+    itemType: "child",
+    sourceType: candidate.sourceType,
+    level: candidate.level
+  };
+}
+
+function buildFlatSections(roundId, candidates, maxCount) {
+  const flatCandidates = candidates.slice(0, maxCount);
+  const sections = flatCandidates.map((candidate, idx) => ({
+    id: `ccn-section-${roundId}-flat-${idx + 1}`,
+    title: candidate.title,
+    element: candidate.element,
+    index: idx + 1,
+    groupId: null,
+    itemType: "flat",
+    sourceType: "fallback",
+    level: candidate.level
+  }));
+
+  return {
+    sectionGroups: [],
+    sections
+  };
+}
+
+/**
+ * 把候选章节组装成“group + child”结构，并同步产出扁平 sections 索引。
+ */
+function buildGroupsAndSections(roundId, candidates, options = {}) {
+  const groupMax = Number.isFinite(options.groupMax) ? options.groupMax : SECTION_GROUP_MAX_COUNT;
+  const childMax = Number.isFinite(options.childMax) ? options.childMax : SECTION_GROUP_CHILD_MAX_COUNT;
+  const flatMax = Number.isFinite(options.flatMax) ? options.flatMax : SECTION_MAX_COUNT;
+
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return {
+      sectionGroups: [],
+      sections: []
+    };
+  }
+
+  const hasMain = candidates.some((item) => item.semanticType === "main");
+  if (!hasMain) {
+    return buildFlatSections(roundId, candidates, flatMax);
+  }
+
+  const groups = [];
+  let currentGroup = null;
+
+  for (const candidate of candidates) {
+    if (candidate.semanticType === "main") {
+      if (groups.length >= groupMax) {
+        continue;
+      }
+      currentGroup = createGroup(roundId, groups.length + 1, candidate);
+      groups.push(currentGroup);
+      continue;
+    }
+
+    if (candidate.semanticType === "sub") {
+      if (!currentGroup || currentGroup.children.length >= childMax) {
+        continue;
+      }
+      currentGroup.children.push(createChildItem(roundId, currentGroup, currentGroup.children.length + 1, candidate));
+      continue;
+    }
+
+    if (candidate.semanticType === "neutral") {
+      if (!currentGroup || currentGroup.children.length >= childMax || !isAcceptableNeutralCandidate(candidate)) {
+        continue;
+      }
+      currentGroup.children.push(createChildItem(roundId, currentGroup, currentGroup.children.length + 1, candidate));
+    }
+  }
+
+  if (groups.length === 0) {
+    return buildFlatSections(roundId, candidates, flatMax);
+  }
+
+  const sections = [];
+  let flatIndex = 1;
+
+  for (const group of groups) {
+    sections.push({
+      id: group.id,
+      title: group.title,
+      element: group.element,
+      index: flatIndex,
+      groupId: group.id,
+      itemType: "group",
+      sourceType: group.sourceType,
+      level: group.level
+    });
+    flatIndex += 1;
+
+    for (const child of group.children) {
+      sections.push({
+        id: child.id,
+        title: child.title,
+        element: child.element,
+        index: flatIndex,
+        groupId: group.id,
+        itemType: "child",
+        sourceType: child.sourceType,
+        level: child.level
+      });
+      flatIndex += 1;
+    }
+  }
+
+  return {
+    sectionGroups: groups,
+    sections
+  };
+}
+
 /**
  * 提取单条回答中的章节结构。
- * 说明：这里只做“结构识别”，不做 AI 自动总结，保证首版稳定。
+ * 说明：首版不做 AI 提纲生成，仅做“结构识别 + 稳定兜底”。
  */
 export function extractAnswerSections(options = {}) {
   const {
@@ -414,6 +661,7 @@ export function extractAnswerSections(options = {}) {
   if (!sectionSourceEl) {
     return {
       sectionSourceEl: null,
+      sectionGroups: [],
       sections: [],
       canShowButton: false,
       bodyLength: 0,
@@ -428,6 +676,7 @@ export function extractAnswerSections(options = {}) {
     ? sourceTextNormalized
     : assistantTextNormalized;
   const bodyLength = textLength(bodyText);
+
   const isShortAnswer = bodyLength < minBodyLength;
   const isPureCode = isLikelyCodeText(sourceTextNormalized || assistantTextNormalized);
   const isPureTable = isPureTableText(sourceRawText || assistantText);
@@ -435,6 +684,7 @@ export function extractAnswerSections(options = {}) {
   if (isShortAnswer || isPureCode || isPureTable) {
     return {
       sectionSourceEl,
+      sectionGroups: [],
       sections: [],
       canShowButton: false,
       bodyLength,
@@ -442,40 +692,50 @@ export function extractAnswerSections(options = {}) {
     };
   }
 
-  const nativeCandidates = collectNativeHeadingCandidates(sectionSourceEl);
-  const numberedCandidates = collectNumberedHeadingCandidates(sectionSourceEl);
-  const boldCandidates = collectBoldHeadingCandidates(sectionSourceEl);
-  const stageCandidates = collectStageSubtitleCandidates(sectionSourceEl);
+  let sectionGroups = [];
+  let sections = [];
 
-  const selectedCandidates = chooseCandidatePool(nativeCandidates, numberedCandidates, boldCandidates, stageCandidates);
-  const cleanedCandidates = dedupeAndFilterCandidates(selectedCandidates);
+  try {
+    const candidates = chooseCandidates(sectionSourceEl, minCount);
+    const grouped = buildGroupsAndSections(roundId, candidates, {
+      groupMax: SECTION_GROUP_MAX_COUNT,
+      childMax: SECTION_GROUP_CHILD_MAX_COUNT,
+      flatMax: maxCount
+    });
 
-  const sections = cleanedCandidates
-    .slice(0, Math.max(minCount, maxCount))
-    .map((candidate, index) => ({
-      id: `ccn-section-${roundId}-${index + 1}`,
-      title: candidate.title,
-      level: candidate.level,
-      element: candidate.element,
-      roundId,
-      index: index + 1
-    }));
+    sectionGroups = grouped.sectionGroups;
+    sections = grouped.sections.filter((item) => isLocatableElement(item.element));
 
-  const locatableSections = sections.filter((section) => isLocatableElement(section.element));
-  const hasEnoughSections = locatableSections.length >= minCount;
+    if (sections.length > maxCount) {
+      sections = sections.slice(0, maxCount);
+      const validSectionIdSet = new Set(sections.map((item) => item.id));
+      sectionGroups = sectionGroups
+        .map((group) => ({
+          ...group,
+          children: group.children.filter((child) => validSectionIdSet.has(child.id))
+        }))
+        .filter((group) => validSectionIdSet.has(group.id) || group.children.length > 0);
+    }
+  } catch (error) {
+    logger?.warn("章节分组提取失败，已降级为空结果。", error);
+    sectionGroups = [];
+    sections = [];
+  }
 
+  const hasEnoughSections = sections.length >= minCount;
   if (!hasEnoughSections && logger) {
     logger.debug("章节提取未达到最小数量，已降级为空。", {
       roundId,
-      candidateCount: cleanedCandidates.length,
-      locatableCount: locatableSections.length,
+      sectionCount: sections.length,
+      groupCount: sectionGroups.length,
       bodyLength
     });
   }
 
   return {
     sectionSourceEl,
-    sections: hasEnoughSections ? locatableSections.slice(0, maxCount) : [],
+    sectionGroups: hasEnoughSections ? sectionGroups : [],
+    sections: hasEnoughSections ? sections : [],
     canShowButton: hasEnoughSections,
     bodyLength,
     reason: hasEnoughSections ? "ok" : "insufficient-sections"

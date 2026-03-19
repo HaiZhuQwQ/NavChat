@@ -78,6 +78,7 @@ export class PanelView {
     this.roundItemNodeMap = new Map();
 
     this.sectionRoundId = null;
+    this.sectionGroups = [];
     this.sectionItems = [];
     this.activeSectionId = null;
     this.inlineSectionNodeMap = new Map();
@@ -256,11 +257,7 @@ export class PanelView {
 
   setActiveSection(sectionId) {
     this.activeSectionId = sectionId || null;
-
-    for (const [id, node] of this.inlineSectionNodeMap.entries()) {
-      node.classList.toggle("is-active", id === this.activeSectionId);
-    }
-
+    this.syncInlineSectionActiveClasses();
     this.ensureActiveVisible();
   }
 
@@ -281,6 +278,7 @@ export class PanelView {
 
   openSectionView(round) {
     this.sectionRoundId = round?.id || null;
+    this.sectionGroups = Array.isArray(round?.sectionGroups) ? round.sectionGroups : [];
     this.sectionItems = Array.isArray(round?.sections) ? round.sections : [];
     this.activeSectionId = null;
     this.activeRoundId = round?.id || this.activeRoundId;
@@ -291,6 +289,7 @@ export class PanelView {
 
   syncSectionViewRound(round, options = {}) {
     this.sectionRoundId = round?.id || null;
+    this.sectionGroups = Array.isArray(round?.sectionGroups) ? round.sectionGroups : [];
     this.sectionItems = Array.isArray(round?.sections) ? round.sections : [];
 
     const preferredSectionId = options.preferredSectionId || this.activeSectionId;
@@ -303,6 +302,7 @@ export class PanelView {
 
   backToRoundView(options = {}) {
     this.sectionRoundId = null;
+    this.sectionGroups = [];
     this.sectionItems = [];
     this.activeSectionId = null;
     this.inlineSectionNodeMap.clear();
@@ -486,19 +486,27 @@ export class PanelView {
     return item;
   }
 
-  createSectionItem(section) {
+  createSectionItem(section, options = {}) {
     const item = document.createElement("li");
     item.className = "ccn-inline-section-item";
     item.dataset.sectionId = section.id;
+    item.dataset.itemType = section.itemType || "flat";
+    item.dataset.groupId = section.groupId || "";
+    item.classList.toggle("is-group", options.isGroup === true);
+    item.classList.toggle("is-child", options.isChild === true);
+    item.classList.toggle("is-flat", options.isFlat === true);
 
     const button = document.createElement("button");
     button.type = "button";
     button.className = "ccn-inline-section-btn";
+    button.classList.toggle("is-group", options.isGroup === true);
+    button.classList.toggle("is-child", options.isChild === true);
     button.setAttribute("aria-label", `跳转到章节：${section.title}`);
 
     const indexNode = document.createElement("span");
     indexNode.className = "ccn-inline-section-index";
-    indexNode.textContent = String(section.index);
+    // 子章节不展示数字序号，改为小圆点，减少层级噪音。
+    indexNode.textContent = options.isChild === true ? "•" : String(section.index || "");
 
     const textNode = document.createElement("span");
     textNode.className = "ccn-inline-section-title";
@@ -517,6 +525,55 @@ export class PanelView {
     });
 
     return item;
+  }
+
+  createRenderSectionSignature() {
+    if (!this.sectionRoundId) {
+      return "";
+    }
+
+    if (this.sectionGroups.length > 0) {
+      return this.sectionGroups
+        .map((group) => {
+          const childSignature = Array.isArray(group.children)
+            ? group.children.map((child) => `${child.id}:${child.title}:${child.index}`).join(",")
+            : "";
+          return `${group.id}:${group.title}:${group.index}|${childSignature}`;
+        })
+        .join(";");
+    }
+
+    return this.sectionItems.map((section) => `${section.id}:${section.title}:${section.index}`).join("|");
+  }
+
+  syncInlineSectionActiveClasses() {
+    for (const node of this.inlineSectionNodeMap.values()) {
+      node.classList.remove("is-active", "is-group-active-light");
+    }
+
+    if (!this.activeSectionId) {
+      return;
+    }
+
+    const activeNode = this.inlineSectionNodeMap.get(this.activeSectionId);
+    if (!activeNode) {
+      return;
+    }
+
+    activeNode.classList.add("is-active");
+    if (activeNode.dataset.itemType !== "child") {
+      return;
+    }
+
+    const groupId = activeNode.dataset.groupId;
+    if (!groupId) {
+      return;
+    }
+
+    const groupNode = this.inlineSectionNodeMap.get(groupId);
+    if (groupNode && groupNode !== activeNode) {
+      groupNode.classList.add("is-group-active-light");
+    }
   }
 
   createSectionEmptyItem() {
@@ -573,9 +630,7 @@ export class PanelView {
 
     const hasSections = round.hasSections === true;
     const isExpanded = hasSections && round.id === this.sectionRoundId;
-    const expandedSectionSignature = isExpanded
-      ? this.sectionItems.map((section) => `${section.id}:${section.title}:${section.index}`).join("|")
-      : "";
+    const expandedSectionSignature = isExpanded ? this.createRenderSectionSignature() : "";
     const nextRenderKey = [
       round.id,
       round.index,
@@ -634,15 +689,52 @@ export class PanelView {
     refs.inlineSectionListNode.hidden = !isExpanded;
     refs.inlineSectionListNode.textContent = "";
 
-    if (inlineSections.length > 0) {
+    if (isExpanded && this.sectionGroups.length > 0) {
+      const fragment = document.createDocumentFragment();
+      for (const group of this.sectionGroups) {
+        const groupNode = this.createSectionItem(
+          {
+            id: group.id,
+            title: group.title,
+            index: group.index,
+            groupId: group.id,
+            itemType: "group"
+          },
+          { isGroup: true }
+        );
+        this.inlineSectionNodeMap.set(group.id, groupNode);
+        fragment.appendChild(groupNode);
+
+        for (const child of Array.isArray(group.children) ? group.children : []) {
+          const childNode = this.createSectionItem(
+            {
+              ...child,
+              groupId: group.id,
+              itemType: "child"
+            },
+            { isChild: true }
+          );
+          this.inlineSectionNodeMap.set(child.id, childNode);
+          fragment.appendChild(childNode);
+        }
+      }
+      refs.inlineSectionListNode.appendChild(fragment);
+      this.syncInlineSectionActiveClasses();
+    } else if (inlineSections.length > 0) {
       const fragment = document.createDocumentFragment();
       for (const section of inlineSections) {
-        const sectionNode = this.createSectionItem(section);
-        sectionNode.classList.toggle("is-active", section.id === this.activeSectionId);
+        const sectionNode = this.createSectionItem(
+          {
+            ...section,
+            itemType: section.itemType || "flat"
+          },
+          { isFlat: true }
+        );
         this.inlineSectionNodeMap.set(section.id, sectionNode);
         fragment.appendChild(sectionNode);
       }
       refs.inlineSectionListNode.appendChild(fragment);
+      this.syncInlineSectionActiveClasses();
     } else if (isExpanded) {
       refs.inlineSectionListNode.appendChild(this.createSectionEmptyItem());
     }
