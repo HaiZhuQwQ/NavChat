@@ -3,7 +3,10 @@ import { CONFIG } from "./constants.js";
 import { createLogger } from "./logger.js";
 import { RoundIdManager } from "./round-id.js";
 import { buildConversationRounds } from "./core/conversation-parser.js";
-import { collectUnifiedMessages } from "./core/message-pipeline.js";
+import {
+  collectUnifiedMessagesIncremental,
+  createMessagePipelineState
+} from "./core/message-pipeline.js";
 import { AdapterRegistry } from "./core/adapter-registry.js";
 import { ChatGPTAdapter } from "./adapters/chatgpt-adapter.js";
 import { PanelView } from "./panel-view.js";
@@ -179,6 +182,38 @@ function areRoundListsEquivalent(prevRounds, nextRounds) {
   return true;
 }
 
+function areUnifiedMessagesEquivalent(prevMessages, nextMessages) {
+  const prev = Array.isArray(prevMessages) ? prevMessages : [];
+  const next = Array.isArray(nextMessages) ? nextMessages : [];
+  if (prev.length !== next.length) {
+    return false;
+  }
+
+  for (let i = 0; i < prev.length; i += 1) {
+    const left = prev[i];
+    const right = next[i];
+    if (left === right) {
+      continue;
+    }
+
+    if (
+      left?.id !== right?.id
+      || left?.role !== right?.role
+      || left?.text !== right?.text
+      || left?.html !== right?.html
+      || left?.element !== right?.element
+      || left?.index !== right?.index
+      || left?.state?.isStreaming !== right?.state?.isStreaming
+      || left?.state?.isError !== right?.state?.isError
+      || left?.state?.isEmpty !== right?.state?.isEmpty
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 async function bootstrap() {
   const logger = createLogger("main");
 
@@ -244,11 +279,25 @@ async function bootstrap() {
   }
 
   const roundIdManager = new RoundIdManager();
+  let latestMessages = [];
   let latestRounds = [];
   let latestRoundMap = new Map();
   let activeRoundBeforeSectionView = null;
   const sectionRetryMemo = new Map();
   const SECTION_RETRY_COOLDOWN_MS = 2500;
+  // 尾轮次兜底重试：覆盖“流式结束后未再触发有效 mutation（页面变更）”导致章节未更新的场景。
+  const TAIL_SETTLE_RETRY_MAX = 4;
+  const TAIL_SETTLE_RETRY_DELAY_MS = 650;
+  let tailSettleRetryTimer = null;
+  let tailSettleRetryRoundId = null;
+  let tailSettleRetryCount = 0;
+
+  const clearTailSettleRetry = () => {
+    if (tailSettleRetryTimer) {
+      clearTimeout(tailSettleRetryTimer);
+      tailSettleRetryTimer = null;
+    }
+  };
 
   const requestSectionRetryIfNeeded = (roundId) => {
     if (!roundId) {
@@ -268,6 +317,42 @@ async function bootstrap() {
 
     sectionRetryMemo.set(roundId, now);
     debouncedRefresh();
+  };
+
+  const scheduleTailSettleRetryIfNeeded = () => {
+    clearTailSettleRetry();
+
+    const tailRound = latestRounds[latestRounds.length - 1] || null;
+    const shouldRetry = Boolean(
+      tailRound
+      && tailRound.hasSections !== true
+      && Array.isArray(tailRound.assistantMessageEls)
+      && tailRound.assistantMessageEls.length > 0
+      && (tailRound.status === "streaming" || tailRound.status === "complete")
+    );
+
+    if (!shouldRetry) {
+      tailSettleRetryRoundId = null;
+      tailSettleRetryCount = 0;
+      return;
+    }
+
+    if (tailSettleRetryRoundId !== tailRound.id) {
+      tailSettleRetryRoundId = tailRound.id;
+      tailSettleRetryCount = 0;
+    }
+    if (tailSettleRetryCount >= TAIL_SETTLE_RETRY_MAX) {
+      return;
+    }
+
+    tailSettleRetryTimer = setTimeout(() => {
+      tailSettleRetryTimer = null;
+      tailSettleRetryCount += 1;
+      if (runtime.destroyed) {
+        return;
+      }
+      debouncedRefresh();
+    }, TAIL_SETTLE_RETRY_DELAY_MS);
   };
 
   // 打开二级章节视图：先记录当前轮次高亮，再切换到章节模式。
@@ -335,12 +420,25 @@ async function bootstrap() {
   panelView.setCollapsed(collapsed, { skipPersist: true });
 
   const parserLogger = createLogger("conversation-parser");
+  const messagePipelineState = createMessagePipelineState();
 
   const parseAndRender = () => {
-    const messages = collectUnifiedMessages(adapter, container, {
+    const messages = collectUnifiedMessagesIncremental(adapter, container, {
       logger: parserLogger,
-      document
+      document,
+      state: messagePipelineState
     });
+
+    // 消息层短路：当消息模型未变化时，直接跳过轮次构建与面板重渲染。
+    if (areUnifiedMessagesEquivalent(latestMessages, messages)) {
+      logger.debug("消息数据未变化，跳过轮次构建。", {
+        platform: adapter.platform
+      });
+      scheduleTailSettleRetryIfNeeded();
+      scrollManager.detectByView("messages-unchanged-skip-build");
+      return;
+    }
+    latestMessages = messages;
 
     const rounds = buildConversationRounds(messages, {
       roundIdManager,
@@ -352,6 +450,7 @@ async function bootstrap() {
       logger.debug("轮次数据未变化，跳过重渲染。", {
         platform: adapter.platform
       });
+      scheduleTailSettleRetryIfNeeded();
       scrollManager.detectByView("rounds-unchanged-skip-render");
       return;
     }
@@ -366,6 +465,7 @@ async function bootstrap() {
 
     panelView.setRounds(rounds);
     scrollManager.setRounds(rounds);
+    scheduleTailSettleRetryIfNeeded();
 
     const sectionState = panelView.getSectionViewState();
     if (!sectionState.roundId) {
@@ -429,6 +529,7 @@ async function bootstrap() {
     if (typeof disconnectContentObserver === "function") {
       disconnectContentObserver();
     }
+    clearTailSettleRetry();
     scrollManager.destroy();
     panelView.destroy();
     if (window[RUNTIME_INSTANCE_KEY] === runtime) {
