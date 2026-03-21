@@ -214,6 +214,13 @@ function areUnifiedMessagesEquivalent(prevMessages, nextMessages) {
   return true;
 }
 
+function isConversationDetailPath(pathname) {
+  if (typeof pathname !== "string") {
+    return false;
+  }
+  return pathname.startsWith("/c/") || pathname.startsWith("/share/") || pathname.startsWith("/g/");
+}
+
 async function bootstrap() {
   const logger = createLogger("main");
 
@@ -261,8 +268,8 @@ async function bootstrap() {
     return;
   }
 
-  const container = await adapter.waitForReady({ document, logger });
-  if (!container) {
+  const initialContainer = await adapter.waitForReady({ document, logger });
+  if (!initialContainer) {
     logger.warn("未检测到有效对话容器，不挂载导航面板。", {
       platform: adapter.platform
     });
@@ -286,11 +293,17 @@ async function bootstrap() {
   const sectionRetryMemo = new Map();
   const SECTION_RETRY_COOLDOWN_MS = 2500;
   // 尾轮次兜底重试：覆盖“流式结束后未再触发有效 mutation（页面变更）”导致章节未更新的场景。
-  const TAIL_SETTLE_RETRY_MAX = 4;
+  const TAIL_SETTLE_RETRY_MAX = 8;
   const TAIL_SETTLE_RETRY_DELAY_MS = 650;
+  const TAIL_STREAMING_POLL_DELAY_MS = 700;
+  const EMPTY_ROUNDS_REFRESH_INTERVAL_MS = 1200;
+  const ROUTE_CHECK_INTERVAL_MS = 360;
   let tailSettleRetryTimer = null;
   let tailSettleRetryRoundId = null;
   let tailSettleRetryCount = 0;
+  let tailSettleRetryStatus = null;
+  let debouncedRefresh = () => {};
+  let lastSeenHref = location.href;
 
   const clearTailSettleRetry = () => {
     if (tailSettleRetryTimer) {
@@ -334,13 +347,32 @@ async function bootstrap() {
     if (!shouldRetry) {
       tailSettleRetryRoundId = null;
       tailSettleRetryCount = 0;
+      tailSettleRetryStatus = null;
       return;
     }
 
     if (tailSettleRetryRoundId !== tailRound.id) {
       tailSettleRetryRoundId = tailRound.id;
       tailSettleRetryCount = 0;
+      tailSettleRetryStatus = tailRound.status;
+    } else if (tailSettleRetryStatus !== tailRound.status) {
+      // 状态切换（例如 streaming -> complete）后重置计数，避免在关键时刻用尽重试额度。
+      tailSettleRetryCount = 0;
+      tailSettleRetryStatus = tailRound.status;
     }
+
+    // 流式阶段用低频轮询持续兜底，直到进入 complete 再走有限重试。
+    if (tailRound.status === "streaming") {
+      tailSettleRetryTimer = setTimeout(() => {
+        tailSettleRetryTimer = null;
+        if (runtime.destroyed) {
+          return;
+        }
+        parseAndRender({ force: true });
+      }, TAIL_STREAMING_POLL_DELAY_MS);
+      return;
+    }
+
     if (tailSettleRetryCount >= TAIL_SETTLE_RETRY_MAX) {
       return;
     }
@@ -351,7 +383,7 @@ async function bootstrap() {
       if (runtime.destroyed) {
         return;
       }
-      debouncedRefresh();
+      parseAndRender({ force: true });
     }, TAIL_SETTLE_RETRY_DELAY_MS);
   };
 
@@ -422,15 +454,17 @@ async function bootstrap() {
   const parserLogger = createLogger("conversation-parser");
   const messagePipelineState = createMessagePipelineState();
 
-  const parseAndRender = () => {
-    const messages = collectUnifiedMessagesIncremental(adapter, container, {
+  const parseAndRender = (options = {}) => {
+    const force = options.force === true;
+    const conversationRoot = adapter.getConversationRoot({ document, silent: true }) || initialContainer;
+    const messages = collectUnifiedMessagesIncremental(adapter, conversationRoot, {
       logger: parserLogger,
       document,
       state: messagePipelineState
     });
 
     // 消息层短路：当消息模型未变化时，直接跳过轮次构建与面板重渲染。
-    if (areUnifiedMessagesEquivalent(latestMessages, messages)) {
+    if (!force && areUnifiedMessagesEquivalent(latestMessages, messages)) {
       logger.debug("消息数据未变化，跳过轮次构建。", {
         platform: adapter.platform
       });
@@ -446,7 +480,7 @@ async function bootstrap() {
     });
 
     const roundsChanged = !areRoundListsEquivalent(latestRounds, rounds);
-    if (!roundsChanged) {
+    if (!force && !roundsChanged) {
       logger.debug("轮次数据未变化，跳过重渲染。", {
         platform: adapter.platform
       });
@@ -499,7 +533,7 @@ async function bootstrap() {
     scrollManager.detectActiveSection("sections-refreshed");
   };
 
-  const debouncedRefresh = debounce(() => {
+  debouncedRefresh = debounce(() => {
     logger.debug("触发目录刷新（防抖后执行）。", { platform: adapter.platform });
     parseAndRender();
   }, CONFIG.REFRESH_DEBOUNCE_MS);
@@ -507,7 +541,7 @@ async function bootstrap() {
   parseAndRender();
 
   const disconnectContentObserver = adapter.observeChanges(
-    container,
+    document.body || initialContainer,
     (mutations) => {
       if (!shouldRefreshByMutations(mutations)) {
         return;
@@ -521,6 +555,72 @@ async function bootstrap() {
     { document }
   );
 
+  const resetRouteScopedState = () => {
+    latestMessages = [];
+    latestRounds = [];
+    latestRoundMap = new Map();
+    activeRoundBeforeSectionView = null;
+    sectionRetryMemo.clear();
+    tailSettleRetryRoundId = null;
+    tailSettleRetryCount = 0;
+    tailSettleRetryStatus = null;
+    clearTailSettleRetry();
+    messagePipelineState.previousElements = [];
+    messagePipelineState.normalizedCache = new WeakMap();
+
+    panelView.backToRoundView({ roundId: null });
+    panelView.setRounds([]);
+    scrollManager.clearSections();
+    scrollManager.setViewMode("rounds");
+    scrollManager.setRounds([]);
+  };
+
+  const scheduleRouteRefresh = () => {
+    // 路由切换后分 3 次强制刷新，覆盖 ChatGPT SPA（单页应用）异步挂载阶段。
+    const retryDelays = [80, 360, 980];
+    for (const delay of retryDelays) {
+      setTimeout(() => {
+        if (runtime.destroyed) {
+          return;
+        }
+        parseAndRender({ force: true });
+      }, delay);
+    }
+  };
+
+  const routeCheckTimer = setInterval(() => {
+    if (runtime.destroyed) {
+      return;
+    }
+    if (location.href === lastSeenHref) {
+      return;
+    }
+
+    const previousHref = lastSeenHref;
+    lastSeenHref = location.href;
+    logger.info("检测到对话路由变化，刷新导航数据。", {
+      from: previousHref,
+      to: lastSeenHref
+    });
+
+    resetRouteScopedState();
+    scheduleRouteRefresh();
+  }, ROUTE_CHECK_INTERVAL_MS);
+
+  // 兜底：从首页进入对话时，若初始轮次仍为空，定期触发轻量刷新直到识别出首批消息。
+  const emptyRoundsRefreshTimer = setInterval(() => {
+    if (runtime.destroyed) {
+      return;
+    }
+    if (!isConversationDetailPath(location.pathname)) {
+      return;
+    }
+    if (latestRounds.length > 0) {
+      return;
+    }
+    debouncedRefresh();
+  }, EMPTY_ROUNDS_REFRESH_INTERVAL_MS);
+
   runtime.destroy = (reason = "manual") => {
     if (runtime.destroyed) {
       return;
@@ -529,6 +629,8 @@ async function bootstrap() {
     if (typeof disconnectContentObserver === "function") {
       disconnectContentObserver();
     }
+    clearInterval(routeCheckTimer);
+    clearInterval(emptyRoundsRefreshTimer);
     clearTailSettleRetry();
     scrollManager.destroy();
     panelView.destroy();
