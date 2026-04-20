@@ -449,12 +449,39 @@ async function bootstrap() {
   panelView.mount();
 
   const collapsed = await loadPanelCollapsed();
-  panelView.setCollapsed(collapsed, { skipPersist: true });
+  logger.info("已读取导航面板折叠状态。", { collapsed });
+  // 开发/调试场景下扩展重载后优先保证面板可见，避免历史折叠状态让用户误以为未挂载。
+  panelView.setCollapsed(false, { skipPersist: true });
+  if (collapsed) {
+    savePanelCollapsed(false).catch((error) => {
+      logger.warn("重置面板折叠状态失败，已忽略。", error);
+    });
+  }
 
   const parserLogger = createLogger("conversation-parser");
   const messagePipelineState = createMessagePipelineState();
+  let panelMissingLogged = false;
+
+  const ensurePanelMounted = (source = "watchdog") => {
+    if (panelView.isMounted()) {
+      panelMissingLogged = false;
+      return false;
+    }
+
+    if (!panelMissingLogged) {
+      logger.info("导航面板节点丢失，尝试重新挂载。", { source });
+      panelMissingLogged = true;
+    }
+    panelView.mount();
+    panelView.setCollapsed(false, { skipPersist: true });
+    panelView.setRounds(latestRounds);
+    panelView.setActiveRound(panelView.getActiveRoundId());
+    return true;
+  };
 
   const parseAndRender = (options = {}) => {
+    ensurePanelMounted("parse-and-render");
+
     const force = options.force === true;
     const conversationRoot = adapter.getConversationRoot({ document, silent: true }) || initialContainer;
     const messages = collectUnifiedMessagesIncremental(adapter, conversationRoot, {
@@ -621,6 +648,13 @@ async function bootstrap() {
     debouncedRefresh();
   }, EMPTY_ROUNDS_REFRESH_INTERVAL_MS);
 
+  const panelMountWatchdogTimer = setInterval(() => {
+    if (runtime.destroyed) {
+      return;
+    }
+    ensurePanelMounted("interval");
+  }, 500);
+
   runtime.destroy = (reason = "manual") => {
     if (runtime.destroyed) {
       return;
@@ -631,6 +665,7 @@ async function bootstrap() {
     }
     clearInterval(routeCheckTimer);
     clearInterval(emptyRoundsRefreshTimer);
+    clearInterval(panelMountWatchdogTimer);
     clearTailSettleRetry();
     scrollManager.destroy();
     panelView.destroy();

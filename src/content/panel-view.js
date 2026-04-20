@@ -102,9 +102,26 @@ export class PanelView {
     this.boundHandleExpandPointerEnd = (event) => this.handleExpandPointerEnd(event);
   }
 
+  getMountHost() {
+    return document.documentElement || document.body;
+  }
+
   mount() {
-    if (this.root) {
+    if (this.root?.isConnected) {
       return;
+    }
+
+    if (this.root && !this.root.isConnected) {
+      this.detachDragListeners();
+      window.removeEventListener("resize", this.boundHandleWindowResize);
+      this.root = null;
+      this.shell = null;
+      this.collapseButton = null;
+      this.expandButton = null;
+      this.searchWrap = null;
+      this.searchInput = null;
+      this.listContainer = null;
+      this.emptyState = null;
     }
 
     // 保险清理：热更新或多次注入时，先移除残留根节点，避免出现双层面板。
@@ -137,7 +154,7 @@ export class PanelView {
       </button>
     `;
 
-    document.body.appendChild(this.root);
+    this.getMountHost()?.appendChild(this.root);
 
     this.shell = this.root.querySelector(".ccn-shell");
     this.searchWrap = this.root.querySelector(".ccn-search-wrap");
@@ -157,7 +174,12 @@ export class PanelView {
     window.addEventListener("resize", this.boundHandleWindowResize, { passive: true });
 
     this.updateViewModeUI();
+    this.renderRoundList();
     this.logger.info("导航面板挂载完成。");
+  }
+
+  isMounted() {
+    return Boolean(this.root?.isConnected && document.querySelector("#ccn-root") === this.root);
   }
 
   applyExpandButtonIcon() {

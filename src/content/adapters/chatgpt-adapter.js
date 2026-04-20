@@ -79,6 +79,19 @@ const SELECTOR_REGISTRY = {
   }
 };
 
+const CONVERSATION_MARKER_SELECTOR = [
+  "[data-message-author-role]",
+  "[data-message-id]",
+  "[data-testid^='conversation-turn-']",
+  "[data-testid*='conversation-turn']",
+  "[data-testid='user-message']",
+  "[data-testid='assistant-message']",
+  "[data-testid='conversation-turn-content']",
+  "[data-testid*='message']",
+  "article",
+  "[role='article']"
+].join(", ");
+
 const LOW_CONFIDENCE_SELECTORS = new Set([
   "main article",
   "[role='article']",
@@ -389,7 +402,7 @@ export class ChatGPTAdapter extends BaseAdapter {
   }
 
   findConversationContainer(root = document, options = {}) {
-    const result = this.selectFirstWithFallback(root, "conversationContainer", options);
+    const result = this._selectBestConversationContainer(root, options);
     if (!result.element) {
       if (options.silent !== true) {
         this.logger.warn("未找到主对话容器：所有主/备选择器都匹配失败。");
@@ -428,7 +441,7 @@ export class ChatGPTAdapter extends BaseAdapter {
       const shouldWarn = this.emptyMessageScanCount >= 8 && containerTextLength > 20;
 
       if (shouldWarn) {
-        this.logger.warn("主对话容器已找到，但消息节点匹配为空。", {
+        this.logger.debug("主对话容器已找到，但消息节点匹配为空。", {
           containerTag: container?.tagName,
           emptyScanCount: this.emptyMessageScanCount,
           containerTextLength
@@ -738,6 +751,89 @@ export class ChatGPTAdapter extends BaseAdapter {
     return uniqueElements(normalized);
   }
 
+  _selectBestConversationContainer(root, options = {}) {
+    const config = SELECTOR_REGISTRY.conversationContainer;
+    const candidates = [];
+
+    for (const tier of ["primary", "fallback"]) {
+      for (const selector of config[tier]) {
+        try {
+          const elements = this._queryAllWithShadow(root, selector);
+          for (const element of elements) {
+            if (!(element instanceof HTMLElement)) {
+              continue;
+            }
+            candidates.push({
+              element,
+              selector,
+              tier,
+              score: this._scoreConversationContainer(element, selector, tier)
+            });
+          }
+        } catch (error) {
+          if (options.silent !== true) {
+            this.logger.warn(`选择器执行失败：${selector}`, error);
+          }
+        }
+      }
+    }
+
+    if (candidates.length === 0) {
+      return { element: null, selector: null, tier: null };
+    }
+
+    candidates.sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+      const relation = left.element.compareDocumentPosition(right.element);
+      return relation & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1;
+    });
+
+    const best = candidates[0];
+    if (options.silent !== true) {
+      this._logSelectorTier("conversationContainer", best.selector, best.tier);
+    }
+
+    return {
+      element: best.element,
+      selector: best.selector,
+      tier: best.tier
+    };
+  }
+
+  _scoreConversationContainer(element, selector, tier) {
+    let score = tier === "primary" ? 20 : 0;
+
+    if (this._isVisible(element)) {
+      score += 60;
+    }
+
+    if (selector === "main" || selector === "[role='main']") {
+      score += 10;
+    }
+
+    if (element === document.body) {
+      score -= 60;
+    }
+
+    const textLength = normalizeText(element.textContent || "").length;
+    score += Math.min(textLength / 20, 80);
+
+    const markerCount = this._queryAllWithShadow(element, CONVERSATION_MARKER_SELECTOR).length;
+    score += Math.min(markerCount * 18, 220);
+
+    const roleMarkerCount = this._queryAllWithShadow(element, "[data-message-author-role], [data-message-id]").length;
+    score += Math.min(roleMarkerCount * 36, 220);
+
+    const rect = element.getBoundingClientRect();
+    if (rect.width > 240 && rect.height > 120) {
+      score += 30;
+    }
+
+    return score;
+  }
+
   _hasAnySelector(root, key) {
     const result = this.selectFirstWithFallback(root, key, { silent: true });
     return Boolean(result.element);
@@ -888,13 +984,15 @@ export class ChatGPTAdapter extends BaseAdapter {
 
       const summary = sampleNodes.map((node) => ({
         tag: node.tagName,
+        className: typeof node.className === "string" ? node.className.slice(0, 160) : "",
         dataTestId: node.getAttribute("data-testid") || "",
         role: node.getAttribute("role") || "",
         dataMessageRole: node.getAttribute("data-message-author-role") || "",
-        dataMessageId: node.getAttribute("data-message-id") || ""
+        dataMessageId: node.getAttribute("data-message-id") || "",
+        textSample: normalizeText(node.textContent || "").slice(0, 120)
       }));
 
-      this.logger.info("消息识别调试快照（前40个节点）。", summary);
+      this.logger.debug("消息识别调试快照（前40个节点）。", summary);
     } catch (error) {
       this.logger.warn("输出消息识别调试快照失败。", error);
     }
